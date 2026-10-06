@@ -27,7 +27,7 @@ export interface GameConfiguration {
 export const SIX_SHOT_TARGET_COUNT = 6;
 export const SIX_SHOT_DURATION = 30; // seconds
 export const SIX_SHOT_ROUND_DURATION = SIX_SHOT_DURATION; // seconds
-export const SIX_SHOT_TARGET_SIZE = 50; // radius in pixels
+export const SIX_SHOT_TARGET_SIZE = 22; // radius in pixels
 
 /**
  * Margin from canvas edges where targets will not spawn.
@@ -37,9 +37,9 @@ export const TARGET_SPAWN_MARGIN = 40;
 
 /**
  * Minimum pixel distance between target centers to prevent overlap.
- * Set to slightly more than double the target radius for comfortable spacing.
+ * Set to comfortable spacing relative to 22px target radius.
  */
-export const MIN_TARGET_SEPARATION = 120;
+export const MIN_TARGET_SEPARATION = 65;
 
 /**
  * Maximum number of retries when generating a non-overlapping spawn position.

@@ -5,30 +5,18 @@ import { generateRoundId } from '../../telemetry/ids';
 import type { Target } from '../entities/Target';
 
 /**
- * Texture key for the concentric-circle target graphic.
+ * Texture key for the circular target graphic.
  * Generated once in preload/create and reused for all target sprites.
  */
 const TARGET_TEXTURE_KEY = 'target_circle';
 
-/**
- * SixShotScene is the primary Phaser scene for the Six Shot aim training mode.
- *
- * Responsibilities:
- * - Phaser scene lifecycle
- * - initializing the Six Shot round environment
- * - managing the 30-second round timer
- * - asking TargetManager to populate and maintain targets
- * - rendering targets via Phaser GameObjects
- *
- * It does NOT contain target spawning algorithms directly.
- */
 export type RoundState = 'start' | 'playing' | 'timeOver' | 'results';
 
 /**
  * SixShotScene is the primary Phaser scene for the Six Shot aim training mode.
  *
  * Responsibilities:
- * - Phaser scene lifecycle
+ * - Phaser scene lifecycle & responsive viewport scaling
  * - managing round state flow (START -> PLAYING -> TIMEOVER -> RESULTS -> RESTART)
  * - managing the 30-second round timer & TIME OVER animation transition
  * - asking TargetManager to populate and maintain targets
@@ -51,13 +39,29 @@ export class SixShotScene extends Phaser.Scene {
   private roundState: RoundState = 'start';
   private remainingTime: number = SIX_SHOT_ROUND_DURATION;
 
-  // Debug HUD state & text object
+  // Round statistics
   private shotsFired: number = 0;
   private hits: number = 0;
   private misses: number = 0;
   private lastShotResult: string = 'None';
   private lastHitTargetId: string = 'None';
-  private debugHudText!: Phaser.GameObjects.Text;
+
+  public getLastShotResult(): string {
+    return this.lastShotResult;
+  }
+
+  public getLastHitTargetId(): string {
+    return this.lastHitTargetId;
+  }
+
+  // HUD elements
+  private hudContainer!: Phaser.GameObjects.Container;
+  private hudTimeText!: Phaser.GameObjects.Text;
+  private hudHitsText!: Phaser.GameObjects.Text;
+  private hudAccText!: Phaser.GameObjects.Text;
+
+  // Navigation exit button
+  private exitButton!: Phaser.GameObjects.Text;
 
   // UI Overlay containers & transition objects
   private startContainer!: Phaser.GameObjects.Container;
@@ -74,6 +78,9 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   create(): void {
+    const width = this.scale.width;
+    const height = this.scale.height;
+
     // Set background color from game config
     const bgHex = typeof GAME_CONFIG.canvas.backgroundColor === 'string'
       ? GAME_CONFIG.canvas.backgroundColor
@@ -81,11 +88,10 @@ export class SixShotScene extends Phaser.Scene {
 
     this.cameras.main.setBackgroundColor(bgHex);
 
-    // Generate the target texture (concentric circles)
+    // Generate the modern glowing circular target texture
     this.generateTargetTexture();
 
-    // Initialize TargetManager with canvas dimensions
-    const { width, height } = GAME_CONFIG.canvas;
+    // Initialize TargetManager with current viewport dimensions
     this.targetManager = new TargetManager(width, height);
 
     // Generate a round ID for this session
@@ -106,10 +112,9 @@ export class SixShotScene extends Phaser.Scene {
       this.renderTarget(target);
     }
 
-    // Create Temporary Debug HUD
-    this.createDebugHud();
-
-    // Create Start and Results UI Overlays
+    // Create HUD, Exit Button, and Overlays
+    this.createHud();
+    this.createExitButton();
     this.createStartOverlay();
     this.createResultsOverlay();
 
@@ -118,9 +123,13 @@ export class SixShotScene extends Phaser.Scene {
       this.handlePointerDown(pointer.worldX, pointer.worldY);
     });
 
-    // Log spawn confirmation in development
+    // Listen to window / canvas resize events
+    this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
+      this.handleResize(gameSize.width, gameSize.height);
+    });
+
     console.log(
-      `[SixShotScene] Initialized in START state with ${this.targetManager.getActiveCount()} targets`
+      `[SixShotScene] Initialized in START state (${width}x${height}) with ${this.targetManager.getActiveCount()} targets`
     );
   }
 
@@ -136,7 +145,31 @@ export class SixShotScene extends Phaser.Scene {
     if (this.remainingTime <= 0) {
       this.triggerTimeOver();
     } else {
-      this.updateDebugHud();
+      this.updateHud();
+    }
+  }
+
+  /**
+   * Handle dynamic viewport resize to keep HUD, overlays, exit button, and spawn bounds aligned.
+   */
+  private handleResize(width: number, height: number): void {
+    if (this.targetManager) {
+      this.targetManager.updateSpawnArea(width, height);
+    }
+    if (this.hudContainer) {
+      this.hudContainer.setPosition(width / 2, 36);
+    }
+    if (this.startContainer) {
+      this.startContainer.setPosition(width / 2, height / 2);
+    }
+    if (this.resultsContainer) {
+      this.resultsContainer.setPosition(width / 2, height / 2);
+    }
+    if (this.exitButton) {
+      this.exitButton.setPosition(width - 20, 20);
+    }
+    if (this.timeOverText) {
+      this.timeOverText.setPosition(width / 2, height / 2);
     }
   }
 
@@ -144,6 +177,16 @@ export class SixShotScene extends Phaser.Scene {
    * Main pointer input router based on current round state.
    */
   private handlePointerDown(x: number, y: number): void {
+    // 1. Check if Exit Button was clicked
+    if (this.exitButton && this.exitButton.getBounds().contains(x, y)) {
+      const onExit = this.game.registry.get('onExit');
+      if (typeof onExit === 'function') {
+        onExit();
+      }
+      return;
+    }
+
+    // 2. Route interaction based on roundState
     if (this.roundState === 'start') {
       this.startRound();
     } else if (this.roundState === 'results') {
@@ -165,7 +208,7 @@ export class SixShotScene extends Phaser.Scene {
     if (this.timeOverText) {
       this.timeOverText.setVisible(false);
     }
-    this.updateDebugHud();
+    this.updateHud();
     console.log(`[SixShotScene] Round ${this.roundId} started.`);
   }
 
@@ -175,11 +218,10 @@ export class SixShotScene extends Phaser.Scene {
   private triggerTimeOver(): void {
     this.roundState = 'timeOver';
     this.remainingTime = 0;
-    this.updateDebugHud();
+    this.updateHud();
 
-    const { width, height } = GAME_CONFIG.canvas;
-    const centerX = width / 2;
-    const centerY = height / 2;
+    const centerX = this.scale.width / 2;
+    const centerY = this.scale.height / 2;
 
     // Create TIME OVER text object if not already instantiated
     if (!this.timeOverText) {
@@ -195,6 +237,7 @@ export class SixShotScene extends Phaser.Scene {
     }
 
     // Set initial animation properties
+    this.timeOverText.setPosition(centerX, centerY);
     this.timeOverText.setScale(0.75);
     this.timeOverText.setAlpha(0);
     this.timeOverText.setVisible(true);
@@ -237,7 +280,7 @@ export class SixShotScene extends Phaser.Scene {
     this.roundState = 'results';
     this.updateResultsOverlay();
     this.resultsContainer.setVisible(true);
-    this.updateDebugHud();
+    this.updateHud();
     console.log(`[SixShotScene] Round ${this.roundId} complete.`);
   }
 
@@ -279,7 +322,7 @@ export class SixShotScene extends Phaser.Scene {
    * Determines whether the click resulted in a HIT or MISS.
    * On HIT: destroys the hit target, spawns an immediate replacement, and provides hit visual feedback.
    * On MISS: displays a miss visual pulse.
-   * Updates the Debug HUD metrics on every shot.
+   * Updates the Gameplay HUD metrics on every shot.
    */
   private handleShot(x: number, y: number): void {
     if (this.roundState !== 'playing') {
@@ -295,14 +338,14 @@ export class SixShotScene extends Phaser.Scene {
       this.lastShotResult = 'HIT';
       this.lastHitTargetId = hitTarget.targetId;
 
-      // 1. Visual feedback on hit target position
+      // 1. Visual feedback on hit target position (glowing ring expansion)
       const hitGfx = this.add.graphics();
-      hitGfx.fillStyle(0x00ff88, 0.6);
-      hitGfx.fillCircle(hitTarget.x, hitTarget.y, hitTarget.size);
-      hitGfx.lineStyle(2, 0x00ff88, 0.9);
-      hitGfx.strokeCircle(hitTarget.x, hitTarget.y, hitTarget.size + 4);
+      hitGfx.fillStyle(0x00ffff, 0.5);
+      hitGfx.fillCircle(hitTarget.x, hitTarget.y, hitTarget.size + 3);
+      hitGfx.lineStyle(2, 0xffffff, 0.9);
+      hitGfx.strokeCircle(hitTarget.x, hitTarget.y, hitTarget.size + 8);
 
-      this.time.delayedCall(150, () => {
+      this.time.delayedCall(120, () => {
         hitGfx.destroy();
       });
 
@@ -329,50 +372,141 @@ export class SixShotScene extends Phaser.Scene {
       // Visual feedback: temporary red pulse at click location
       const missGfx = this.add.graphics();
       missGfx.fillStyle(0xff3344, 0.6);
-      missGfx.fillCircle(x, y, 5);
+      missGfx.fillCircle(x, y, 4);
       missGfx.lineStyle(2, 0xff3344, 0.8);
-      missGfx.strokeCircle(x, y, 12);
+      missGfx.strokeCircle(x, y, 10);
 
-      this.time.delayedCall(200, () => {
+      this.time.delayedCall(180, () => {
         missGfx.destroy();
       });
     }
 
-    this.updateDebugHud();
+    this.updateHud();
+  }
+
+  /**
+   * Create the unobtrusive Exit Button in top-right corner.
+   */
+  private createExitButton(): void {
+    const margin = 20;
+    const x = this.scale.width - margin;
+    const y = margin;
+
+    this.exitButton = this.add.text(x, y, '← EXIT', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '13px',
+      color: '#88aacc',
+      backgroundColor: '#121626cc',
+      padding: { x: 10, y: 6 },
+    })
+    .setOrigin(1, 0)
+    .setDepth(250);
+  }
+
+  /**
+   * Create the horizontal Gameplay HUD panel at top-center of viewport.
+   */
+  private createHud(): void {
+    const centerX = this.scale.width / 2;
+    const centerY = 36;
+
+    const bg = this.add.rectangle(0, 0, 420, 50, 0x0a0d18, 0.85);
+    bg.setStrokeStyle(1.5, 0x232736, 0.9);
+
+    const timeLabel = this.add.text(-140, -14, 'TIME', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '10px',
+      color: '#88aacc',
+    }).setOrigin(0.5, 0.5);
+
+    this.hudTimeText = this.add.text(-140, 6, '30.0s', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '18px',
+      color: '#00e5ff',
+    }).setOrigin(0.5, 0.5);
+
+    const hitsLabel = this.add.text(0, -14, 'HITS', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '10px',
+      color: '#88aacc',
+    }).setOrigin(0.5, 0.5);
+
+    this.hudHitsText = this.add.text(0, 6, '0', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '18px',
+      color: '#ffffff',
+    }).setOrigin(0.5, 0.5);
+
+    const accLabel = this.add.text(140, -14, 'ACCURACY', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '10px',
+      color: '#88aacc',
+    }).setOrigin(0.5, 0.5);
+
+    this.hudAccText = this.add.text(140, 6, '0.0%', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '18px',
+      color: '#00ffcc',
+    }).setOrigin(0.5, 0.5);
+
+    this.hudContainer = this.add.container(centerX, centerY, [
+      bg,
+      timeLabel,
+      this.hudTimeText,
+      hitsLabel,
+      this.hudHitsText,
+      accLabel,
+      this.hudAccText,
+    ]);
+
+    this.hudContainer.setDepth(100);
+    this.updateHud();
+  }
+
+  /**
+   * Update the text metrics displayed on the Gameplay HUD.
+   */
+  private updateHud(): void {
+    const accuracy = this.shotsFired > 0
+      ? ((this.hits / this.shotsFired) * 100).toFixed(1)
+      : '0.0';
+
+    this.hudTimeText.setText(`${this.remainingTime.toFixed(1)}s`);
+    this.hudHitsText.setText(`${this.hits}`);
+    this.hudAccText.setText(`${accuracy}%`);
   }
 
   /**
    * Create the Start Screen UI Overlay container.
    */
   private createStartOverlay(): void {
-    const { width, height } = GAME_CONFIG.canvas;
-    const centerX = width / 2;
-    const centerY = height / 2;
+    const centerX = this.scale.width / 2;
+    const centerY = this.scale.height / 2;
 
-    const bgDim = this.add.rectangle(centerX, centerY, width, height, 0x090b14, 0.85);
+    const bgDim = this.add.rectangle(0, 0, 3000, 2000, 0x090b14, 0.85);
 
-    const panel = this.add.rectangle(centerX, centerY, 480, 260, 0x121626, 0.95);
-    panel.setStrokeStyle(2, 0x00ff88, 0.8);
+    const panel = this.add.rectangle(0, 0, 480, 260, 0x121626, 0.95);
+    panel.setStrokeStyle(2, 0x00e5ff, 0.8);
 
-    const title = this.add.text(centerX, centerY - 65, 'SIX SHOT', {
+    const title = this.add.text(0, -65, 'SIX SHOT', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '36px',
-      color: '#00ff88',
+      color: '#00e5ff',
     }).setOrigin(0.5, 0.5);
 
-    const subtitle = this.add.text(centerX, centerY - 20, 'Precision Aim Trainer (30s)', {
+    const subtitle = this.add.text(0, -20, 'Hit the targets as accurately and quickly as you can.', {
       fontFamily: 'Consolas, Monaco, monospace',
-      fontSize: '14px',
+      fontSize: '13px',
       color: '#88aacc',
     }).setOrigin(0.5, 0.5);
 
-    const startPrompt = this.add.text(centerX, centerY + 50, 'TAP TO START', {
+    const startPrompt = this.add.text(0, 50, '[ TAP TO START ]', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '22px',
       color: '#ffffff',
     }).setOrigin(0.5, 0.5);
 
-    this.startContainer = this.add.container(0, 0, [
+    this.startContainer = this.add.container(centerX, centerY, [
       bgDim,
       panel,
       title,
@@ -388,36 +522,35 @@ export class SixShotScene extends Phaser.Scene {
    * Create the Results Screen UI Overlay container.
    */
   private createResultsOverlay(): void {
-    const { width, height } = GAME_CONFIG.canvas;
-    const centerX = width / 2;
-    const centerY = height / 2;
+    const centerX = this.scale.width / 2;
+    const centerY = this.scale.height / 2;
 
-    const bgDim = this.add.rectangle(centerX, centerY, width, height, 0x090b14, 0.85);
+    const bgDim = this.add.rectangle(0, 0, 3000, 2000, 0x090b14, 0.88);
 
-    const panel = this.add.rectangle(centerX, centerY, 480, 300, 0x121626, 0.95);
+    const panel = this.add.rectangle(0, 0, 480, 340, 0x121626, 0.95);
     panel.setStrokeStyle(2, 0x00ffcc, 0.8);
 
-    const title = this.add.text(centerX, centerY - 100, 'ROUND COMPLETE', {
+    const title = this.add.text(0, -110, 'ROUND COMPLETE', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '28px',
       color: '#00ffcc',
     }).setOrigin(0.5, 0.5);
 
-    this.resultsStatsText = this.add.text(centerX, centerY - 10, '', {
+    this.resultsStatsText = this.add.text(0, -10, '', {
       fontFamily: 'Consolas, Monaco, "Courier New", monospace',
       fontSize: '16px',
       color: '#ffffff',
       align: 'center',
-      lineSpacing: 8,
+      lineSpacing: 10,
     }).setOrigin(0.5, 0.5);
 
-    const restartPrompt = this.add.text(centerX, centerY + 95, 'TAP TO RESTART', {
+    const restartPrompt = this.add.text(0, 105, '[ TAP TO RESTART ]', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '20px',
       color: '#00ffcc',
     }).setOrigin(0.5, 0.5);
 
-    this.resultsContainer = this.add.container(0, 0, [
+    this.resultsContainer = this.add.container(centerX, centerY, [
       bgDim,
       panel,
       title,
@@ -438,107 +571,45 @@ export class SixShotScene extends Phaser.Scene {
       : '0.0';
 
     const lines = [
-      `Shots Fired : ${this.shotsFired}`,
-      `Hits        : ${this.hits}`,
-      `Misses      : ${this.misses}`,
-      `Accuracy    : ${accuracy}%`,
+      `HITS        : ${this.hits}`,
+      `ACCURACY    : ${accuracy}%`,
+      `SHOTS FIRED : ${this.shotsFired}`,
+      `MISSES      : ${this.misses}`,
     ];
 
     this.resultsStatsText.setText(lines.join('\n'));
   }
 
   /**
-   * Initialize the temporary Debug HUD text display in top-left corner.
-   */
-  private createDebugHud(): void {
-    const style: Phaser.Types.GameObjects.Text.TextStyle = {
-      fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-      fontSize: '13px',
-      color: '#00ffcc',
-      backgroundColor: '#0a0d18cc',
-      padding: { x: 12, y: 10 },
-    };
-
-    this.debugHudText = this.add.text(16, 16, '', style);
-    this.debugHudText.setDepth(100);
-    this.updateDebugHud();
-  }
-
-  /**
-   * Update the text content of the temporary Debug HUD.
-   */
-  private updateDebugHud(): void {
-    const accuracy = this.shotsFired > 0
-      ? ((this.hits / this.shotsFired) * 100).toFixed(1)
-      : '0.0';
-
-    const shortTargetId = this.lastHitTargetId !== 'None'
-      ? (this.lastHitTargetId.length > 12 ? `${this.lastHitTargetId.substring(0, 10)}...` : this.lastHitTargetId)
-      : 'None';
-
-    const timeStr = `${this.remainingTime.toFixed(1)}s`;
-    let statusStr = 'START SCREEN';
-    if (this.roundState === 'playing') {
-      statusStr = 'PLAYING';
-    } else if (this.roundState === 'timeOver') {
-      statusStr = 'TIME OVER';
-    } else if (this.roundState === 'results') {
-      statusStr = 'RESULTS';
-    }
-
-    const textLines = [
-      '=== [DEBUG HUD - SIX SHOT] ===',
-      `Time       : ${timeStr}`,
-      `Status     : ${statusStr}`,
-      `Shots Fired: ${this.shotsFired}`,
-      `Hits       : ${this.hits}`,
-      `Misses     : ${this.misses}`,
-      `Accuracy   : ${accuracy}%`,
-      `Active Tgts: ${this.targetManager ? this.targetManager.getActiveCount() : 0}`,
-      `Last Shot  : ${this.lastShotResult}`,
-      `Target     : ${shortTargetId}`,
-    ];
-
-    if (this.roundState === 'results') {
-      textLines.push('------------------------------');
-      textLines.push('*** ROUND COMPLETE ***');
-    }
-
-    this.debugHudText.setText(textLines.join('\n'));
-  }
-
-  /**
-   * Generate the concentric-circle target texture using Phaser 4 Graphics API.
-   * Creates a simple aim-trainer-style bullseye: outer ring, middle ring, center dot.
+   * Generate the modern glowing circular target texture using Phaser 4 Graphics API.
+   * Replaces the bullseye with a sleek 22px radius luminous cyan ball.
    */
   private generateTargetTexture(): void {
-    const radius = GAME_CONFIG.sixShot.targetRadius;
-    const diameter = radius * 2;
+    const radius = GAME_CONFIG.sixShot.targetRadius; // 22px
+    const padding = 6;
+    const size = (radius + padding) * 2;
+    const center = size / 2;
 
     const graphics = this.add.graphics();
 
-    // Outer circle (darkest ring)
-    graphics.fillStyle(0xcc2244, 1);
-    graphics.fillCircle(radius, radius, radius);
+    // 1. Outer subtle luminous glow
+    graphics.fillStyle(0x00e5ff, 0.25);
+    graphics.fillCircle(center, center, radius + 4);
 
-    // Second ring
-    graphics.fillStyle(0xffffff, 1);
-    graphics.fillCircle(radius, radius, radius * 0.75);
+    // 2. Main solid cyan target ball
+    graphics.fillStyle(0x00ffff, 1);
+    graphics.fillCircle(center, center, radius);
 
-    // Third ring
-    graphics.fillStyle(0xcc2244, 1);
-    graphics.fillCircle(radius, radius, radius * 0.5);
+    // 3. Core highlight dot
+    graphics.fillStyle(0xffffff, 0.85);
+    graphics.fillCircle(center - radius * 0.25, center - radius * 0.25, radius * 0.35);
 
-    // Center bullseye dot
-    graphics.fillStyle(0xffffff, 1);
-    graphics.fillCircle(radius, radius, radius * 0.25);
+    // 4. Subtle stroke ring
+    graphics.lineStyle(1.5, 0x88ffff, 0.9);
+    graphics.strokeCircle(center, center, radius);
 
-    // Outer stroke ring for visibility against dark background
-    graphics.lineStyle(2, 0xff4466, 0.8);
-    graphics.strokeCircle(radius, radius, radius - 1);
-
-    // Bake to texture and destroy the temporary Graphics object
-    graphics.generateTexture(TARGET_TEXTURE_KEY, diameter, diameter);
+    // Bake to texture and destroy temporary Graphics object
+    graphics.generateTexture(TARGET_TEXTURE_KEY, size, size);
     graphics.destroy();
   }
 
@@ -550,7 +621,6 @@ export class SixShotScene extends Phaser.Scene {
     const image = this.add.image(target.x, target.y, TARGET_TEXTURE_KEY);
 
     // Phaser Images have origin at 0.5 by default, centering the texture on (x, y).
-    // No need to explicitly set origin.
 
     this.targetSprites.set(target.targetId, image);
   }

@@ -19,7 +19,7 @@ export interface SpawnArea {
 export class TargetManager {
   private activeTargets: Map<string, Target> = new Map();
   private maxActiveTargets: number;
-  private spawnArea: SpawnArea;
+  private spawnArea!: SpawnArea;
   private targetRadius: number;
   private minSeparation: number;
   private retryLimit: number;
@@ -40,7 +40,18 @@ export class TargetManager {
 
     // Compute valid spawn area from canvas dimensions, margin, and target radius.
     // Targets must have their entire bounding circle inside the playable area.
-    const effectiveMargin = spawnMargin + targetRadius;
+    this.updateSpawnArea(canvasWidth, canvasHeight, spawnMargin);
+  }
+
+  /**
+   * Update valid spawn area based on updated canvas/viewport dimensions.
+   */
+  public updateSpawnArea(
+    canvasWidth: number,
+    canvasHeight: number,
+    spawnMargin: number = GAME_CONFIG.sixShot.spawnMargin
+  ): void {
+    const effectiveMargin = spawnMargin + this.targetRadius;
     this.spawnArea = {
       minX: effectiveMargin,
       maxX: canvasWidth - effectiveMargin,

@@ -3,7 +3,11 @@ import Phaser from 'phaser';
 import { SixShotScene } from '../game/scenes/SixShotScene';
 import { GAME_CONFIG } from '../game/config/gameConfig';
 
-export const GameCanvas: React.FC = () => {
+interface GameCanvasProps {
+  onExit?: () => void;
+}
+
+export const GameCanvas: React.FC<GameCanvasProps> = ({ onExit }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const gameInstanceRef = useRef<Phaser.Game | null>(null);
 
@@ -18,17 +22,20 @@ export const GameCanvas: React.FC = () => {
     const config: Phaser.Types.Core.GameConfig = {
       type: Phaser.AUTO,
       parent: containerRef.current,
-      width: GAME_CONFIG.canvas.width,
-      height: GAME_CONFIG.canvas.height,
+      width: window.innerWidth,
+      height: window.innerHeight,
       backgroundColor: GAME_CONFIG.canvas.backgroundColor,
       scene: [SixShotScene],
       scale: {
-        mode: Phaser.Scale.FIT,
+        mode: Phaser.Scale.RESIZE,
         autoCenter: Phaser.Scale.CENTER_BOTH,
       },
     };
 
     const game = new Phaser.Game(config);
+    if (onExit) {
+      game.registry.set('onExit', onExit);
+    }
     gameInstanceRef.current = game;
 
     return () => {
@@ -37,11 +44,11 @@ export const GameCanvas: React.FC = () => {
         gameInstanceRef.current = null;
       }
     };
-  }, []);
+  }, [onExit]);
 
   return (
-    <div className="game-canvas-wrapper">
-      <div ref={containerRef} id="phaser-container" className="phaser-container" />
+    <div className="fullscreen-game-wrapper">
+      <div ref={containerRef} id="phaser-container" className="fullscreen-phaser-container" />
     </div>
   );
 };
