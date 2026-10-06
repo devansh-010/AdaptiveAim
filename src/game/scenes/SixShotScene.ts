@@ -1,5 +1,5 @@
 import Phaser from 'phaser';
-import { GAME_CONFIG } from '../config/gameConfig';
+import { GAME_CONFIG, SIX_SHOT_ROUND_DURATION } from '../config/gameConfig';
 import { TargetManager } from '../systems/TargetManager';
 import { generateRoundId } from '../../telemetry/ids';
 import type { Target } from '../entities/Target';
@@ -16,7 +16,8 @@ const TARGET_TEXTURE_KEY = 'target_circle';
  * Responsibilities:
  * - Phaser scene lifecycle
  * - initializing the Six Shot round environment
- * - asking TargetManager to populate the initial targets
+ * - managing the 30-second round timer
+ * - asking TargetManager to populate and maintain targets
  * - rendering targets via Phaser GameObjects
  *
  * It does NOT contain target spawning algorithms directly.
@@ -31,6 +32,10 @@ export class SixShotScene extends Phaser.Scene {
    * references into the Target entity class.
    */
   private targetSprites: Map<string, Phaser.GameObjects.Image> = new Map();
+
+  // Round timer state
+  private remainingTime: number = SIX_SHOT_ROUND_DURATION;
+  private roundActive: boolean = true;
 
   // Debug HUD state & text object
   private shotsFired: number = 0;
@@ -66,6 +71,10 @@ export class SixShotScene extends Phaser.Scene {
     // Generate a round ID for this session
     this.roundId = generateRoundId();
 
+    // Reset round timer state
+    this.remainingTime = SIX_SHOT_ROUND_DURATION;
+    this.roundActive = true;
+
     // Spawn initial 6 targets and render them
     const targets = this.targetManager.spawnInitialTargets(this.roundId);
     for (const target of targets) {
@@ -86,18 +95,35 @@ export class SixShotScene extends Phaser.Scene {
     );
   }
 
-  override update(_time: number, _delta: number): void {
-    // TODO: Update round timer and monitor scene state in later milestone
+  override update(_time: number, delta: number): void {
+    if (!this.roundActive) return;
+
+    // delta is provided in milliseconds by Phaser; convert to seconds
+    this.remainingTime -= delta / 1000;
+
+    if (this.remainingTime <= 0) {
+      this.remainingTime = 0;
+      this.roundActive = false;
+      console.log(`[SixShotScene] Round ${this.roundId} complete.`);
+    }
+
+    this.updateDebugHud();
   }
 
   /**
    * Handle mouse pointer click event.
    * Determines whether the click resulted in a HIT or MISS.
+   * Ignored if the round is no longer active (timer reached 0).
    * On HIT: destroys the hit target, spawns an immediate replacement, and provides hit visual feedback.
    * On MISS: displays a miss visual pulse.
    * Updates the Debug HUD metrics on every shot.
    */
   private handleShot(x: number, y: number): void {
+    // Prevent processing any shot after timer reaches 0
+    if (!this.roundActive) {
+      return;
+    }
+
     this.shotsFired++;
 
     const hitTarget = this.targetManager.checkHit(x, y);
@@ -182,8 +208,13 @@ export class SixShotScene extends Phaser.Scene {
       ? (this.lastHitTargetId.length > 12 ? `${this.lastHitTargetId.substring(0, 10)}...` : this.lastHitTargetId)
       : 'None';
 
+    const timeStr = `${this.remainingTime.toFixed(1)}s`;
+    const statusStr = this.roundActive ? 'ACTIVE' : 'ROUND COMPLETE';
+
     const textLines = [
       '=== [DEBUG HUD - SIX SHOT] ===',
+      `Time       : ${timeStr}`,
+      `Status     : ${statusStr}`,
       `Shots Fired: ${this.shotsFired}`,
       `Hits       : ${this.hits}`,
       `Misses     : ${this.misses}`,
@@ -192,6 +223,11 @@ export class SixShotScene extends Phaser.Scene {
       `Last Shot  : ${this.lastShotResult}`,
       `Target     : ${shortTargetId}`,
     ];
+
+    if (!this.roundActive) {
+      textLines.push('------------------------------');
+      textLines.push('*** ROUND COMPLETE ***');
+    }
 
     this.debugHudText.setText(textLines.join('\n'));
   }
