@@ -22,15 +22,15 @@ const TARGET_TEXTURE_KEY = 'target_circle';
  *
  * It does NOT contain target spawning algorithms directly.
  */
-export type RoundState = 'start' | 'playing' | 'results';
+export type RoundState = 'start' | 'playing' | 'timeOver' | 'results';
 
 /**
  * SixShotScene is the primary Phaser scene for the Six Shot aim training mode.
  *
  * Responsibilities:
  * - Phaser scene lifecycle
- * - managing round state flow (START -> PLAYING -> RESULTS -> RESTART)
- * - managing the 30-second round timer
+ * - managing round state flow (START -> PLAYING -> TIMEOVER -> RESULTS -> RESTART)
+ * - managing the 30-second round timer & TIME OVER animation transition
  * - asking TargetManager to populate and maintain targets
  * - rendering targets and overlay screens via Phaser GameObjects
  *
@@ -59,10 +59,11 @@ export class SixShotScene extends Phaser.Scene {
   private lastHitTargetId: string = 'None';
   private debugHudText!: Phaser.GameObjects.Text;
 
-  // UI Overlay containers
+  // UI Overlay containers & transition objects
   private startContainer!: Phaser.GameObjects.Container;
   private resultsContainer!: Phaser.GameObjects.Container;
   private resultsStatsText!: Phaser.GameObjects.Text;
+  private timeOverText!: Phaser.GameObjects.Text;
 
   constructor() {
     super({ key: 'SixShotScene' });
@@ -133,7 +134,7 @@ export class SixShotScene extends Phaser.Scene {
     this.remainingTime -= delta / 1000;
 
     if (this.remainingTime <= 0) {
-      this.endRound();
+      this.triggerTimeOver();
     } else {
       this.updateDebugHud();
     }
@@ -150,6 +151,7 @@ export class SixShotScene extends Phaser.Scene {
     } else if (this.roundState === 'playing') {
       this.handleShot(x, y);
     }
+    // If roundState === 'timeOver', ignore clicks completely during transition
   }
 
   /**
@@ -160,8 +162,71 @@ export class SixShotScene extends Phaser.Scene {
     this.remainingTime = SIX_SHOT_ROUND_DURATION;
     this.startContainer.setVisible(false);
     this.resultsContainer.setVisible(false);
+    if (this.timeOverText) {
+      this.timeOverText.setVisible(false);
+    }
     this.updateDebugHud();
     console.log(`[SixShotScene] Round ${this.roundId} started.`);
+  }
+
+  /**
+   * Trigger the animated TIME OVER transition state when the 30s timer reaches zero.
+   */
+  private triggerTimeOver(): void {
+    this.roundState = 'timeOver';
+    this.remainingTime = 0;
+    this.updateDebugHud();
+
+    const { width, height } = GAME_CONFIG.canvas;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    // Create TIME OVER text object if not already instantiated
+    if (!this.timeOverText) {
+      this.timeOverText = this.add.text(centerX, centerY, 'TIME OVER', {
+        fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+        fontSize: '52px',
+        color: '#ff3366',
+        stroke: '#ffffff',
+        strokeThickness: 2,
+        align: 'center',
+      }).setOrigin(0.5, 0.5);
+      this.timeOverText.setDepth(300);
+    }
+
+    // Set initial animation properties
+    this.timeOverText.setScale(0.75);
+    this.timeOverText.setAlpha(0);
+    this.timeOverText.setVisible(true);
+
+    // Phase 1: Scale up + Fade in (~400ms)
+    this.tweens.add({
+      targets: this.timeOverText,
+      scaleX: 1.0,
+      scaleY: 1.0,
+      alpha: 1,
+      duration: 400,
+      ease: 'Power2',
+      onComplete: () => {
+        // Phase 2: Hold for 500ms, then Phase 3: Scale out + Fade out (~400ms)
+        this.time.delayedCall(500, () => {
+          this.tweens.add({
+            targets: this.timeOverText,
+            scaleX: 1.1,
+            scaleY: 1.1,
+            alpha: 0,
+            duration: 400,
+            ease: 'Power2',
+            onComplete: () => {
+              this.timeOverText.setVisible(false);
+              this.endRound();
+            },
+          });
+        });
+      },
+    });
+
+    console.log(`[SixShotScene] Round ${this.roundId} TIME OVER transition started.`);
   }
 
   /**
@@ -415,6 +480,8 @@ export class SixShotScene extends Phaser.Scene {
     let statusStr = 'START SCREEN';
     if (this.roundState === 'playing') {
       statusStr = 'PLAYING';
+    } else if (this.roundState === 'timeOver') {
+      statusStr = 'TIME OVER';
     } else if (this.roundState === 'results') {
       statusStr = 'RESULTS';
     }
