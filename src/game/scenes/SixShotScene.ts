@@ -22,6 +22,20 @@ const TARGET_TEXTURE_KEY = 'target_circle';
  *
  * It does NOT contain target spawning algorithms directly.
  */
+export type RoundState = 'start' | 'playing' | 'results';
+
+/**
+ * SixShotScene is the primary Phaser scene for the Six Shot aim training mode.
+ *
+ * Responsibilities:
+ * - Phaser scene lifecycle
+ * - managing round state flow (START -> PLAYING -> RESULTS -> RESTART)
+ * - managing the 30-second round timer
+ * - asking TargetManager to populate and maintain targets
+ * - rendering targets and overlay screens via Phaser GameObjects
+ *
+ * It does NOT contain target spawning algorithms directly.
+ */
 export class SixShotScene extends Phaser.Scene {
   private targetManager!: TargetManager;
   private roundId!: string;
@@ -33,9 +47,9 @@ export class SixShotScene extends Phaser.Scene {
    */
   private targetSprites: Map<string, Phaser.GameObjects.Image> = new Map();
 
-  // Round timer state
+  // Round flow state
+  private roundState: RoundState = 'start';
   private remainingTime: number = SIX_SHOT_ROUND_DURATION;
-  private roundActive: boolean = true;
 
   // Debug HUD state & text object
   private shotsFired: number = 0;
@@ -44,6 +58,11 @@ export class SixShotScene extends Phaser.Scene {
   private lastShotResult: string = 'None';
   private lastHitTargetId: string = 'None';
   private debugHudText!: Phaser.GameObjects.Text;
+
+  // UI Overlay containers
+  private startContainer!: Phaser.GameObjects.Container;
+  private resultsContainer!: Phaser.GameObjects.Container;
+  private resultsStatsText!: Phaser.GameObjects.Text;
 
   constructor() {
     super({ key: 'SixShotScene' });
@@ -71,11 +90,16 @@ export class SixShotScene extends Phaser.Scene {
     // Generate a round ID for this session
     this.roundId = generateRoundId();
 
-    // Reset round timer state
+    // Set initial round state to start (timer paused at 30s)
+    this.roundState = 'start';
     this.remainingTime = SIX_SHOT_ROUND_DURATION;
-    this.roundActive = true;
+    this.shotsFired = 0;
+    this.hits = 0;
+    this.misses = 0;
+    this.lastShotResult = 'None';
+    this.lastHitTargetId = 'None';
 
-    // Spawn initial 6 targets and render them
+    // Spawn initial 6 targets and render them behind start screen
     const targets = this.targetManager.spawnInitialTargets(this.roundId);
     for (const target of targets) {
       this.renderTarget(target);
@@ -84,43 +108,116 @@ export class SixShotScene extends Phaser.Scene {
     // Create Temporary Debug HUD
     this.createDebugHud();
 
-    // Register pointerdown event listener for shot recording & hit detection
+    // Create Start and Results UI Overlays
+    this.createStartOverlay();
+    this.createResultsOverlay();
+
+    // Register pointerdown event listener for round flow and shooting
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      this.handleShot(pointer.worldX, pointer.worldY);
+      this.handlePointerDown(pointer.worldX, pointer.worldY);
     });
 
     // Log spawn confirmation in development
     console.log(
-      `[SixShotScene] Spawned ${this.targetManager.getActiveCount()} targets for round ${this.roundId}`
+      `[SixShotScene] Initialized in START state with ${this.targetManager.getActiveCount()} targets`
     );
   }
 
   override update(_time: number, delta: number): void {
-    if (!this.roundActive) return;
+    // Timer only ticks during active PLAYING state
+    if (this.roundState !== 'playing') {
+      return;
+    }
 
     // delta is provided in milliseconds by Phaser; convert to seconds
     this.remainingTime -= delta / 1000;
 
     if (this.remainingTime <= 0) {
-      this.remainingTime = 0;
-      this.roundActive = false;
-      console.log(`[SixShotScene] Round ${this.roundId} complete.`);
+      this.endRound();
+    } else {
+      this.updateDebugHud();
     }
-
-    this.updateDebugHud();
   }
 
   /**
-   * Handle mouse pointer click event.
+   * Main pointer input router based on current round state.
+   */
+  private handlePointerDown(x: number, y: number): void {
+    if (this.roundState === 'start') {
+      this.startRound();
+    } else if (this.roundState === 'results') {
+      this.restartRound();
+    } else if (this.roundState === 'playing') {
+      this.handleShot(x, y);
+    }
+  }
+
+  /**
+   * Start a new round: set state to playing and begin timer.
+   */
+  private startRound(): void {
+    this.roundState = 'playing';
+    this.remainingTime = SIX_SHOT_ROUND_DURATION;
+    this.startContainer.setVisible(false);
+    this.resultsContainer.setVisible(false);
+    this.updateDebugHud();
+    console.log(`[SixShotScene] Round ${this.roundId} started.`);
+  }
+
+  /**
+   * Conclude active round: set state to results and show summary overlay.
+   */
+  private endRound(): void {
+    this.remainingTime = 0;
+    this.roundState = 'results';
+    this.updateResultsOverlay();
+    this.resultsContainer.setVisible(true);
+    this.updateDebugHud();
+    console.log(`[SixShotScene] Round ${this.roundId} complete.`);
+  }
+
+  /**
+   * Reset round statistics, recreate fresh targets, and start a new round.
+   */
+  private restartRound(): void {
+    // 1. Destroy existing Phaser target sprites
+    for (const sprite of this.targetSprites.values()) {
+      sprite.destroy();
+    }
+    this.targetSprites.clear();
+
+    // 2. Clear target manager collection
+    this.targetManager.clearAll();
+
+    // 3. Generate new round ID
+    this.roundId = generateRoundId();
+
+    // 4. Reset stats
+    this.shotsFired = 0;
+    this.hits = 0;
+    this.misses = 0;
+    this.lastShotResult = 'None';
+    this.lastHitTargetId = 'None';
+
+    // 5. Spawn 6 fresh targets using existing TargetManager logic
+    const targets = this.targetManager.spawnInitialTargets(this.roundId);
+    for (const target of targets) {
+      this.renderTarget(target);
+    }
+
+    // 6. Transition state to playing and start timer
+    this.startRound();
+  }
+
+  /**
+   * Handle mouse pointer click event during PLAYING state.
    * Determines whether the click resulted in a HIT or MISS.
-   * Ignored if the round is no longer active (timer reached 0).
    * On HIT: destroys the hit target, spawns an immediate replacement, and provides hit visual feedback.
    * On MISS: displays a miss visual pulse.
    * Updates the Debug HUD metrics on every shot.
    */
   private handleShot(x: number, y: number): void {
-    // Prevent processing any shot after timer reaches 0
-    if (!this.roundActive) {
+    if (this.roundState !== 'playing') {
       return;
     }
 
@@ -180,6 +277,112 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   /**
+   * Create the Start Screen UI Overlay container.
+   */
+  private createStartOverlay(): void {
+    const { width, height } = GAME_CONFIG.canvas;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    const bgDim = this.add.rectangle(centerX, centerY, width, height, 0x090b14, 0.85);
+
+    const panel = this.add.rectangle(centerX, centerY, 480, 260, 0x121626, 0.95);
+    panel.setStrokeStyle(2, 0x00ff88, 0.8);
+
+    const title = this.add.text(centerX, centerY - 65, 'SIX SHOT', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '36px',
+      color: '#00ff88',
+    }).setOrigin(0.5, 0.5);
+
+    const subtitle = this.add.text(centerX, centerY - 20, 'Precision Aim Trainer (30s)', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '14px',
+      color: '#88aacc',
+    }).setOrigin(0.5, 0.5);
+
+    const startPrompt = this.add.text(centerX, centerY + 50, 'TAP TO START', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '22px',
+      color: '#ffffff',
+    }).setOrigin(0.5, 0.5);
+
+    this.startContainer = this.add.container(0, 0, [
+      bgDim,
+      panel,
+      title,
+      subtitle,
+      startPrompt,
+    ]);
+
+    this.startContainer.setDepth(200);
+    this.startContainer.setVisible(true);
+  }
+
+  /**
+   * Create the Results Screen UI Overlay container.
+   */
+  private createResultsOverlay(): void {
+    const { width, height } = GAME_CONFIG.canvas;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    const bgDim = this.add.rectangle(centerX, centerY, width, height, 0x090b14, 0.85);
+
+    const panel = this.add.rectangle(centerX, centerY, 480, 300, 0x121626, 0.95);
+    panel.setStrokeStyle(2, 0x00ffcc, 0.8);
+
+    const title = this.add.text(centerX, centerY - 100, 'ROUND COMPLETE', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '28px',
+      color: '#00ffcc',
+    }).setOrigin(0.5, 0.5);
+
+    this.resultsStatsText = this.add.text(centerX, centerY - 10, '', {
+      fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+      fontSize: '16px',
+      color: '#ffffff',
+      align: 'center',
+      lineSpacing: 8,
+    }).setOrigin(0.5, 0.5);
+
+    const restartPrompt = this.add.text(centerX, centerY + 95, 'TAP TO RESTART', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '20px',
+      color: '#00ffcc',
+    }).setOrigin(0.5, 0.5);
+
+    this.resultsContainer = this.add.container(0, 0, [
+      bgDim,
+      panel,
+      title,
+      this.resultsStatsText,
+      restartPrompt,
+    ]);
+
+    this.resultsContainer.setDepth(200);
+    this.resultsContainer.setVisible(false);
+  }
+
+  /**
+   * Update text content of Results Overlay using final round statistics.
+   */
+  private updateResultsOverlay(): void {
+    const accuracy = this.shotsFired > 0
+      ? ((this.hits / this.shotsFired) * 100).toFixed(1)
+      : '0.0';
+
+    const lines = [
+      `Shots Fired : ${this.shotsFired}`,
+      `Hits        : ${this.hits}`,
+      `Misses      : ${this.misses}`,
+      `Accuracy    : ${accuracy}%`,
+    ];
+
+    this.resultsStatsText.setText(lines.join('\n'));
+  }
+
+  /**
    * Initialize the temporary Debug HUD text display in top-left corner.
    */
   private createDebugHud(): void {
@@ -209,7 +412,12 @@ export class SixShotScene extends Phaser.Scene {
       : 'None';
 
     const timeStr = `${this.remainingTime.toFixed(1)}s`;
-    const statusStr = this.roundActive ? 'ACTIVE' : 'ROUND COMPLETE';
+    let statusStr = 'START SCREEN';
+    if (this.roundState === 'playing') {
+      statusStr = 'PLAYING';
+    } else if (this.roundState === 'results') {
+      statusStr = 'RESULTS';
+    }
 
     const textLines = [
       '=== [DEBUG HUD - SIX SHOT] ===',
@@ -224,7 +432,7 @@ export class SixShotScene extends Phaser.Scene {
       `Target     : ${shortTargetId}`,
     ];
 
-    if (!this.roundActive) {
+    if (this.roundState === 'results') {
       textLines.push('------------------------------');
       textLines.push('*** ROUND COMPLETE ***');
     }
