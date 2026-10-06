@@ -32,6 +32,13 @@ export class SixShotScene extends Phaser.Scene {
    */
   private targetSprites: Map<string, Phaser.GameObjects.Image> = new Map();
 
+  // Debug HUD state & text object
+  private shotsFired: number = 0;
+  private hits: number = 0;
+  private misses: number = 0;
+  private lastShotResult: string = 'None';
+  private debugHudText!: Phaser.GameObjects.Text;
+
   constructor() {
     super({ key: 'SixShotScene' });
   }
@@ -64,17 +71,101 @@ export class SixShotScene extends Phaser.Scene {
       this.renderTarget(target);
     }
 
+    // Create Temporary Debug HUD
+    this.createDebugHud();
+
+    // Register pointerdown event listener for shot recording & hit detection
+    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      this.handleShot(pointer.worldX, pointer.worldY);
+    });
+
     // Log spawn confirmation in development
     console.log(
       `[SixShotScene] Spawned ${this.targetManager.getActiveCount()} targets for round ${this.roundId}`
     );
-
-    // TODO: Initialize RoundManager system
-    // TODO: Register pointerdown input listener for shot recording & hit detection
   }
 
   override update(_time: number, _delta: number): void {
-    // TODO: Update round timer and monitor scene state
+    // TODO: Update round timer and monitor scene state in later milestone
+  }
+
+  /**
+   * Handle mouse pointer click event.
+   * Determines whether the click resulted in a HIT or MISS, gives brief visual feedback,
+   * and updates the temporary Debug HUD metrics.
+   */
+  private handleShot(x: number, y: number): void {
+    this.shotsFired++;
+
+    const hitTarget = this.targetManager.checkHit(x, y);
+
+    if (hitTarget) {
+      this.hits++;
+      this.lastShotResult = `HIT (Target ${hitTarget.targetId.substring(0, 6)}...)`;
+
+      // Visual feedback: flash green tint on hit target sprite
+      const sprite = this.targetSprites.get(hitTarget.targetId);
+      if (sprite) {
+        sprite.setTint(0x00ff88);
+        this.time.delayedCall(150, () => {
+          sprite.clearTint();
+        });
+      }
+    } else {
+      this.misses++;
+      this.lastShotResult = `MISS at (${Math.round(x)}, ${Math.round(y)})`;
+
+      // Visual feedback: temporary red pulse at click location
+      const missGfx = this.add.graphics();
+      missGfx.fillStyle(0xff3344, 0.6);
+      missGfx.fillCircle(x, y, 5);
+      missGfx.lineStyle(2, 0xff3344, 0.8);
+      missGfx.strokeCircle(x, y, 12);
+
+      this.time.delayedCall(200, () => {
+        missGfx.destroy();
+      });
+    }
+
+    this.updateDebugHud();
+  }
+
+  /**
+   * Initialize the temporary Debug HUD text display in top-left corner.
+   */
+  private createDebugHud(): void {
+    const style: Phaser.Types.GameObjects.Text.TextStyle = {
+      fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+      fontSize: '13px',
+      color: '#00ffcc',
+      backgroundColor: '#0a0d18cc',
+      padding: { x: 12, y: 10 },
+    };
+
+    this.debugHudText = this.add.text(16, 16, '', style);
+    this.debugHudText.setDepth(100);
+    this.updateDebugHud();
+  }
+
+  /**
+   * Update the text content of the temporary Debug HUD.
+   */
+  private updateDebugHud(): void {
+    const accuracy = this.shotsFired > 0
+      ? ((this.hits / this.shotsFired) * 100).toFixed(1)
+      : '0.0';
+
+    const textLines = [
+      '=== [DEBUG HUD - SIX SHOT] ===',
+      `Shots Fired : ${this.shotsFired}`,
+      `Hits        : ${this.hits}`,
+      `Misses      : ${this.misses}`,
+      `Accuracy    : ${accuracy}%`,
+      `Last Shot   : ${this.lastShotResult}`,
+      `Active Tgts : ${this.targetManager ? this.targetManager.getActiveCount() : 0}`,
+    ];
+
+    this.debugHudText.setText(textLines.join('\n'));
   }
 
   /**

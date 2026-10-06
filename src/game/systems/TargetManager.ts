@@ -144,6 +144,19 @@ export class TargetManager {
     return Array.from(this.activeTargets.values());
   }
 
+  /**
+   * Check if a point (x, y) hits any active target.
+   * Returns the hit Target entity, or null if no target was hit.
+   */
+  public checkHit(x: number, y: number): Target | null {
+    for (const target of this.activeTargets.values()) {
+      if (!target.isDestroyed && target.isHit(x, y)) {
+        return target;
+      }
+    }
+    return null;
+  }
+
   public getActiveCount(): number {
     return this.activeTargets.size;
   }
