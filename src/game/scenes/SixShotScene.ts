@@ -37,6 +37,7 @@ export class SixShotScene extends Phaser.Scene {
   private hits: number = 0;
   private misses: number = 0;
   private lastShotResult: string = 'None';
+  private lastHitTargetId: string = 'None';
   private debugHudText!: Phaser.GameObjects.Text;
 
   constructor() {
@@ -91,8 +92,10 @@ export class SixShotScene extends Phaser.Scene {
 
   /**
    * Handle mouse pointer click event.
-   * Determines whether the click resulted in a HIT or MISS, gives brief visual feedback,
-   * and updates the temporary Debug HUD metrics.
+   * Determines whether the click resulted in a HIT or MISS.
+   * On HIT: destroys the hit target, spawns an immediate replacement, and provides hit visual feedback.
+   * On MISS: displays a miss visual pulse.
+   * Updates the Debug HUD metrics on every shot.
    */
   private handleShot(x: number, y: number): void {
     this.shotsFired++;
@@ -101,19 +104,39 @@ export class SixShotScene extends Phaser.Scene {
 
     if (hitTarget) {
       this.hits++;
-      this.lastShotResult = `HIT (Target ${hitTarget.targetId.substring(0, 6)}...)`;
+      this.lastShotResult = 'HIT';
+      this.lastHitTargetId = hitTarget.targetId;
 
-      // Visual feedback: flash green tint on hit target sprite
+      // 1. Visual feedback on hit target position
+      const hitGfx = this.add.graphics();
+      hitGfx.fillStyle(0x00ff88, 0.6);
+      hitGfx.fillCircle(hitTarget.x, hitTarget.y, hitTarget.size);
+      hitGfx.lineStyle(2, 0x00ff88, 0.9);
+      hitGfx.strokeCircle(hitTarget.x, hitTarget.y, hitTarget.size + 4);
+
+      this.time.delayedCall(150, () => {
+        hitGfx.destroy();
+      });
+
+      // 2. Destroy hit target's Phaser visual object
       const sprite = this.targetSprites.get(hitTarget.targetId);
       if (sprite) {
-        sprite.setTint(0x00ff88);
-        this.time.delayedCall(150, () => {
-          sprite.clearTint();
-        });
+        sprite.destroy();
+        this.targetSprites.delete(hitTarget.targetId);
+      }
+
+      // 3. Destroy target domain entity in TargetManager
+      this.targetManager.destroyTarget(hitTarget.targetId);
+
+      // 4. Immediately spawn replacement target to maintain active target count = 6
+      const newTargets = this.targetManager.maintainTargetCount(this.roundId);
+      for (const newTarget of newTargets) {
+        this.renderTarget(newTarget);
       }
     } else {
       this.misses++;
-      this.lastShotResult = `MISS at (${Math.round(x)}, ${Math.round(y)})`;
+      this.lastShotResult = 'MISS';
+      this.lastHitTargetId = 'None';
 
       // Visual feedback: temporary red pulse at click location
       const missGfx = this.add.graphics();
@@ -155,14 +178,19 @@ export class SixShotScene extends Phaser.Scene {
       ? ((this.hits / this.shotsFired) * 100).toFixed(1)
       : '0.0';
 
+    const shortTargetId = this.lastHitTargetId !== 'None'
+      ? (this.lastHitTargetId.length > 12 ? `${this.lastHitTargetId.substring(0, 10)}...` : this.lastHitTargetId)
+      : 'None';
+
     const textLines = [
       '=== [DEBUG HUD - SIX SHOT] ===',
-      `Shots Fired : ${this.shotsFired}`,
-      `Hits        : ${this.hits}`,
-      `Misses      : ${this.misses}`,
-      `Accuracy    : ${accuracy}%`,
-      `Last Shot   : ${this.lastShotResult}`,
-      `Active Tgts : ${this.targetManager ? this.targetManager.getActiveCount() : 0}`,
+      `Shots Fired: ${this.shotsFired}`,
+      `Hits       : ${this.hits}`,
+      `Misses     : ${this.misses}`,
+      `Accuracy   : ${accuracy}%`,
+      `Active Tgts: ${this.targetManager ? this.targetManager.getActiveCount() : 0}`,
+      `Last Shot  : ${this.lastShotResult}`,
+      `Target     : ${shortTargetId}`,
     ];
 
     this.debugHudText.setText(textLines.join('\n'));

@@ -116,13 +116,16 @@ export class TargetManager {
 
   /**
    * Handle target destruction and remove from active targets.
+   * Returns the destroyed Target entity, or null if target was not active.
    */
-  public destroyTarget(targetId: string, destroyTime: number = Date.now()): void {
+  public destroyTarget(targetId: string, destroyTime: number = Date.now()): Target | null {
     const target = this.activeTargets.get(targetId);
     if (target) {
       target.destroy(destroyTime);
       this.activeTargets.delete(targetId);
+      return target;
     }
+    return null;
   }
 
   /**
