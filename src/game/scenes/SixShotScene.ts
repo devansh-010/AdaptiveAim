@@ -1,7 +1,9 @@
 import Phaser from 'phaser';
 import { GAME_CONFIG, SIX_SHOT_ROUND_DURATION, SIX_SHOT_AIM_SENSITIVITY } from '../config/gameConfig';
 import { TargetManager } from '../systems/TargetManager';
-import { generateRoundId } from '../../telemetry/ids';
+import { generateRoundId, generateShotId } from '../../telemetry/ids';
+import { telemetryCollector } from '../../telemetry/TelemetryCollector';
+import type { ShotTelemetry } from '../../telemetry/types';
 import type { Target } from '../entities/Target';
 
 /**
@@ -26,7 +28,7 @@ export type RoundState = 'start' | 'playing' | 'timeOver' | 'results';
  * - Anchored first-person weapon visual & click recoil feedback
  * - Managing round state flow (START -> PLAYING -> TIMEOVER -> RESULTS -> RESTART)
  * - 30-second round timer & TIME OVER transition
- * - Spawning, rendering, hit detection, and replacement of targets
+ * - Spawning, rendering, hit detection, replacement of targets, and telemetry recording
  */
 export class SixShotScene extends Phaser.Scene {
   private targetManager!: TargetManager;
@@ -107,9 +109,6 @@ export class SixShotScene extends Phaser.Scene {
     // Initialize TargetManager with current viewport dimensions
     this.targetManager = new TargetManager(width, height);
 
-    // Generate round ID for this session
-    this.roundId = generateRoundId();
-
     // Set initial round state to start
     this.roundState = 'start';
     this.remainingTime = SIX_SHOT_ROUND_DURATION;
@@ -120,12 +119,6 @@ export class SixShotScene extends Phaser.Scene {
     this.lastHitTargetId = 'None';
     this.aimOffsetX = 0;
     this.aimOffsetY = 0;
-
-    // Spawn initial 6 targets
-    const targets = this.targetManager.spawnInitialTargets(this.roundId);
-    for (const target of targets) {
-      this.renderTarget(target);
-    }
 
     // Create HUD, Exit Button, Crosshair, Weapon visual, Pointer Lock fallback, and Overlays
     this.createHud();
@@ -155,7 +148,7 @@ export class SixShotScene extends Phaser.Scene {
     });
 
     console.log(
-      `[SixShotScene] Initialized in START state (${width}x${height}) with ${this.targetManager.getActiveCount()} targets`
+      `[SixShotScene] Initialized in START state (${width}x${height}). Waiting for TAP TO START.`
     );
   }
 
@@ -192,7 +185,6 @@ export class SixShotScene extends Phaser.Scene {
 
   /**
    * Handle relative mouse movement when pointer is locked during gameplay.
-   * Mouse movement shifts aim offset; targets appear to move in opposite direction relative to center crosshair.
    */
   private handlePointerMove(pointer: Phaser.Input.Pointer): void {
     if (this.roundState === 'playing' && this.pointerLocked) {
@@ -324,14 +316,49 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   /**
-   * Start a new round: set state to playing, reset aim offset, and begin timer.
+   * Clear existing target sprites and target manager data.
+   */
+  private clearTargets(): void {
+    for (const sprite of this.targetSprites.values()) {
+      sprite.destroy();
+    }
+    this.targetSprites.clear();
+    if (this.targetManager) {
+      this.targetManager.clearAll();
+    }
+  }
+
+  /**
+   * Start a new round: set state to playing, reset stats and aim offset, start telemetry round, and spawn initial 6 targets.
    */
   private startRound(): void {
+    // 1. Clear any existing targets
+    this.clearTargets();
+
+    // 2. Generate unique round ID
+    this.roundId = generateRoundId();
+
+    // 3. Reset round statistics & aim offset
     this.roundState = 'playing';
     this.remainingTime = SIX_SHOT_ROUND_DURATION;
+    this.shotsFired = 0;
+    this.hits = 0;
+    this.misses = 0;
+    this.lastShotResult = 'None';
+    this.lastHitTargetId = 'None';
     this.aimOffsetX = 0;
     this.aimOffsetY = 0;
 
+    // 4. Initialize Telemetry collector for this round
+    telemetryCollector.startRound(this.roundId, 'six_shot', 'fixed');
+
+    // 5. Spawn initial 6 targets (records target spawn events in telemetry)
+    const targets = this.targetManager.spawnInitialTargets(this.roundId);
+    for (const target of targets) {
+      this.renderTarget(target);
+    }
+
+    // 6. Update UI visibility
     this.startContainer.setVisible(false);
     this.resultsContainer.setVisible(false);
     if (this.timeOverText) {
@@ -342,7 +369,7 @@ export class SixShotScene extends Phaser.Scene {
     }
 
     this.updateHud();
-    console.log(`[SixShotScene] Round ${this.roundId} started.`);
+    console.log(`[SixShotScene] Round ${this.roundId} started with telemetry recording.`);
   }
 
   /**
@@ -352,6 +379,9 @@ export class SixShotScene extends Phaser.Scene {
     this.roundState = 'timeOver';
     this.remainingTime = 0;
     this.releasePointerLock();
+
+    // Finalize telemetry recording for current round
+    telemetryCollector.endRound();
 
     if (this.lockNoticeText) {
       this.lockNoticeText.setVisible(false);
@@ -425,40 +455,12 @@ export class SixShotScene extends Phaser.Scene {
    * Reset round statistics, recreate fresh targets, reset aim offset, and start new round.
    */
   private restartRound(): void {
-    // 1. Destroy existing Phaser target sprites
-    for (const sprite of this.targetSprites.values()) {
-      sprite.destroy();
-    }
-    this.targetSprites.clear();
-
-    // 2. Clear target manager collection
-    this.targetManager.clearAll();
-
-    // 3. Generate new round ID
-    this.roundId = generateRoundId();
-
-    // 4. Reset stats and aim offsets
-    this.shotsFired = 0;
-    this.hits = 0;
-    this.misses = 0;
-    this.lastShotResult = 'None';
-    this.lastHitTargetId = 'None';
-    this.aimOffsetX = 0;
-    this.aimOffsetY = 0;
-
-    // 5. Spawn 6 fresh targets
-    const targets = this.targetManager.spawnInitialTargets(this.roundId);
-    for (const target of targets) {
-      this.renderTarget(target);
-    }
-
-    // 6. Transition state to playing and start round
     this.startRound();
   }
 
   /**
    * Handle shot fired at the fixed center crosshair position.
-   * Converts center screen coordinates to world coordinates via aim offset.
+   * Converts center screen coordinates to world coordinates via aim offset and records shot telemetry.
    */
   private handleShot(): void {
     if (this.roundState !== 'playing') {
@@ -479,11 +481,32 @@ export class SixShotScene extends Phaser.Scene {
     this.triggerWeaponRecoil();
 
     const hitTarget = this.targetManager.checkHit(worldX, worldY);
+    const shotId = generateShotId();
+    const timestamp = new Date().toISOString();
 
     if (hitTarget) {
       this.hits++;
       this.lastShotResult = 'HIT';
       this.lastHitTargetId = hitTarget.targetId;
+
+      const distanceToTarget = hitTarget.getDistanceFrom(worldX, worldY);
+
+      // Record HIT shot telemetry
+      const shotTelemetry: ShotTelemetry = {
+        shot_id: shotId,
+        round_id: this.roundId,
+        target_id: hitTarget.targetId,
+        timestamp,
+        hit: true,
+        player_x: worldX,
+        player_y: worldY,
+        target_x: hitTarget.x,
+        target_y: hitTarget.y,
+        target_size: hitTarget.size,
+        target_speed: 0,
+        distance_to_target: distanceToTarget,
+      };
+      telemetryCollector.recordShot(shotTelemetry);
 
       // Screen position of hit target
       const hitScreenX = hitTarget.x - this.aimOffsetX;
@@ -507,10 +530,10 @@ export class SixShotScene extends Phaser.Scene {
         this.targetSprites.delete(hitTarget.targetId);
       }
 
-      // Destroy target domain entity in TargetManager
-      this.targetManager.destroyTarget(hitTarget.targetId);
+      // Destroy target domain entity in TargetManager (records destroy telemetry)
+      this.targetManager.destroyTarget(hitTarget.targetId, timestamp);
 
-      // Immediately spawn replacement target to maintain active count = 6
+      // Immediately spawn replacement target to maintain active count = 6 (records spawn telemetry)
       const newTargets = this.targetManager.maintainTargetCount(this.roundId);
       for (const newTarget of newTargets) {
         this.renderTarget(newTarget);
@@ -519,6 +542,18 @@ export class SixShotScene extends Phaser.Scene {
       this.misses++;
       this.lastShotResult = 'MISS';
       this.lastHitTargetId = 'None';
+
+      // Record MISS shot telemetry (target_id is null)
+      const shotTelemetry: ShotTelemetry = {
+        shot_id: shotId,
+        round_id: this.roundId,
+        target_id: null,
+        timestamp,
+        hit: false,
+        player_x: worldX,
+        player_y: worldY,
+      };
+      telemetryCollector.recordShot(shotTelemetry);
 
       // Visual feedback: temporary red pulse at center crosshair location
       const missGfx = this.add.graphics();

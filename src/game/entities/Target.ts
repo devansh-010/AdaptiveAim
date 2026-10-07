@@ -10,8 +10,8 @@ export class Target {
   public readonly x: number;
   public readonly y: number;
   public readonly size: number;
-  public readonly spawnTime: number;
-  public destroyTime?: number;
+  public readonly spawnTime: string;
+  public destroyTime?: string;
   public isDestroyed: boolean = false;
 
   constructor(
@@ -20,7 +20,7 @@ export class Target {
     x: number,
     y: number,
     size: number,
-    spawnTime: number = Date.now()
+    spawnTime: string = new Date().toISOString()
   ) {
     this.targetId = targetId;
     this.roundId = roundId;
@@ -31,16 +31,16 @@ export class Target {
   }
 
   /**
-   * Mark target as destroyed and record destroy timestamp.
+   * Mark target as destroyed and record destroy timestamp (ISO 8601).
    */
-  public destroy(destroyTime: number = Date.now()): void {
+  public destroy(destroyTime: string = new Date().toISOString()): void {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
     this.destroyTime = destroyTime;
   }
 
   /**
-   * Calculate exact distance from a point (e.g. click coordinates) to target center.
+   * Calculate exact distance from a point to target center in logical world coordinates.
    */
   public getDistanceFrom(pointX: number, pointY: number): number {
     const dx = pointX - this.x;
@@ -59,6 +59,10 @@ export class Target {
    * Convert entity data to Telemetry format.
    */
   public toTelemetry(): TargetTelemetry {
+    const lifetime = this.destroyTime
+      ? new Date(this.destroyTime).getTime() - new Date(this.spawnTime).getTime()
+      : undefined;
+
     return {
       target_id: this.targetId,
       round_id: this.roundId,
@@ -71,7 +75,7 @@ export class Target {
       movement_speed: 0,
       direction_x: 0,
       direction_y: 0,
-      lifetime: this.destroyTime ? this.destroyTime - this.spawnTime : undefined,
+      lifetime,
     };
   }
 }

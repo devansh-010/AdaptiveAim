@@ -26,7 +26,7 @@ export class TelemetryCollector {
     this.activeSession = {
       session_id: generateSessionId(),
       player_id: id,
-      start_time: Date.now(),
+      start_time: new Date().toISOString(),
     };
   }
 
@@ -38,7 +38,14 @@ export class TelemetryCollector {
     return { ...this.activeSession };
   }
 
-  public startRound(roundId: string, mode: string, difficulty: string = 'standard'): void {
+  public getCurrentRound(): RoundTelemetry | null {
+    return this.currentRound ? { ...this.currentRound } : null;
+  }
+
+  /**
+   * Start recording a new gameplay round.
+   */
+  public startRound(roundId: string, mode: string = 'six_shot', difficulty: string = 'fixed'): void {
     this.targetEvents = [];
     this.shotEvents = [];
     this.trajectoryPoints = [];
@@ -48,19 +55,20 @@ export class TelemetryCollector {
       session_id: this.activeSession.session_id,
       mode,
       difficulty,
-      start_time: Date.now(),
+      start_time: new Date().toISOString(),
       duration: 0,
       shots_fired: 0,
       hits: 0,
       misses: 0,
       accuracy: 0,
-      average_reaction_time: 0,
-      average_precision: 0,
       targets_hit: 0,
       targets_spawned: 0,
     };
   }
 
+  /**
+   * Record target spawn event.
+   */
   public recordTargetSpawn(target: TargetTelemetry): void {
     this.targetEvents.push(target);
     if (this.currentRound) {
@@ -68,14 +76,20 @@ export class TelemetryCollector {
     }
   }
 
-  public recordTargetDestroy(targetId: string, destroyTime: number): void {
+  /**
+   * Record target destruction event.
+   */
+  public recordTargetDestroy(targetId: string, destroyTime: string = new Date().toISOString()): void {
     const target = this.targetEvents.find((t) => t.target_id === targetId);
     if (target) {
       target.destroy_time = destroyTime;
-      target.lifetime = destroyTime - target.spawn_time;
+      target.lifetime = new Date(destroyTime).getTime() - new Date(target.spawn_time).getTime();
     }
   }
 
+  /**
+   * Record shot event.
+   */
   public recordShot(shot: ShotTelemetry): void {
     this.shotEvents.push(shot);
 
@@ -87,6 +101,10 @@ export class TelemetryCollector {
       } else {
         this.currentRound.misses += 1;
       }
+
+      this.currentRound.accuracy = Number(
+        ((this.currentRound.hits / this.currentRound.shots_fired) * 100).toFixed(2)
+      );
     }
   }
 
@@ -94,33 +112,46 @@ export class TelemetryCollector {
     this.trajectoryPoints.push(point);
   }
 
+  /**
+   * Finalize current round recording and emit structured debug log.
+   */
   public endRound(): RoundTelemetry | null {
     if (!this.currentRound) return null;
 
-    const endTime = Date.now();
+    const endTime = new Date().toISOString();
     this.currentRound.end_time = endTime;
-    this.currentRound.duration = (endTime - this.currentRound.start_time) / 1000;
+    
+    const startMs = new Date(this.currentRound.start_time).getTime();
+    const endMs = new Date(endTime).getTime();
+    this.currentRound.duration = Number(((endMs - startMs) / 1000).toFixed(2));
 
-    // Calculate aggregated accuracy
     if (this.currentRound.shots_fired > 0) {
-      this.currentRound.accuracy =
-        (this.currentRound.hits / this.currentRound.shots_fired) * 100;
+      this.currentRound.accuracy = Number(
+        ((this.currentRound.hits / this.currentRound.shots_fired) * 100).toFixed(2)
+      );
+    } else {
+      this.currentRound.accuracy = 0;
     }
 
-    // Calculate average reaction time from hit shots
-    const hitShots = this.shotEvents.filter((s) => s.hit && s.reaction_time !== undefined);
-    if (hitShots.length > 0) {
-      const totalReaction = hitShots.reduce((acc, s) => acc + (s.reaction_time || 0), 0);
-      this.currentRound.average_reaction_time = totalReaction / hitShots.length;
-    }
+    const completedRound = { ...this.currentRound };
 
-    // Calculate average precision (offset distance) from hit shots
-    if (hitShots.length > 0) {
-      const totalPrecision = hitShots.reduce((acc, s) => acc + (s.precision || 0), 0);
-      this.currentRound.average_precision = totalPrecision / hitShots.length;
-    }
+    // Development structured telemetry output
+    console.log('=== SIX SHOT TELEMETRY ===');
+    console.log(
+      JSON.stringify(
+        {
+          player_id: this.activePlayer.player_id,
+          session_id: this.activeSession.session_id,
+          round: completedRound,
+          targets: this.targetEvents,
+          shots: this.shotEvents,
+        },
+        null,
+        2
+      )
+    );
 
-    return { ...this.currentRound };
+    return completedRound;
   }
 
   public getRecordedTargets(): TargetTelemetry[] {
@@ -136,9 +167,9 @@ export class TelemetryCollector {
   }
 
   public endSession(): void {
-    this.activeSession.end_time = Date.now();
+    this.activeSession.end_time = new Date().toISOString();
   }
 }
 
-// Global Singleton Instance export for convenience
+// Global Singleton Instance export for application lifecycle
 export const telemetryCollector = new TelemetryCollector();

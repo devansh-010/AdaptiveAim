@@ -1,5 +1,5 @@
 /**
- * Telemetry data types for player performance tracking and future AI model training.
+ * Telemetry data types for player performance tracking and game analytics.
  */
 
 export interface Player {
@@ -9,8 +9,8 @@ export interface Player {
 export interface Session {
   session_id: string;
   player_id: string;
-  start_time: number;
-  end_time?: number;
+  start_time: string;
+  end_time?: string;
 }
 
 export interface RoundTelemetry {
@@ -18,24 +18,24 @@ export interface RoundTelemetry {
   session_id: string;
   mode: string;
   difficulty: string;
-  start_time: number;
-  end_time?: number;
+  start_time: string;
+  end_time?: string;
   duration: number;
   shots_fired: number;
   hits: number;
   misses: number;
   accuracy: number;
-  average_reaction_time: number;
-  average_precision: number;
   targets_hit: number;
   targets_spawned: number;
+  average_reaction_time?: number;
+  average_precision?: number;
 }
 
 export interface TargetTelemetry {
   target_id: string;
   round_id: string;
-  spawn_time: number;
-  destroy_time?: number;
+  spawn_time: string;
+  destroy_time?: string;
   spawn_x: number;
   spawn_y: number;
   target_size: number;
@@ -49,8 +49,8 @@ export interface TargetTelemetry {
 export interface ShotTelemetry {
   shot_id: string;
   round_id: string;
-  target_id?: string;
-  timestamp: number;
+  target_id: string | null;
+  timestamp: string;
   hit: boolean;
   player_x: number;
   player_y: number;
@@ -65,10 +65,10 @@ export interface ShotTelemetry {
 
 /**
  * Trajectory point type for mouse movement tracking.
- * Note: Recording implementation will be added in future versions.
+ * Reserved for future telemetry milestones.
  */
 export interface TrajectoryPoint {
-  timestamp: number;
+  timestamp: string;
   x: number;
   y: number;
   target_id?: string;
