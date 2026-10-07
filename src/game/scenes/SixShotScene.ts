@@ -29,6 +29,7 @@ export type RoundState = 'start' | 'playing' | 'timeOver' | 'results';
  * - Managing round state flow (START -> PLAYING -> TIMEOVER -> RESULTS -> RESTART)
  * - 30-second round timer & TIME OVER transition
  * - Spawning, rendering, hit detection, replacement of targets, and telemetry recording
+ *   including Reaction Time and Precision metrics per shot.
  */
 export class SixShotScene extends Phaser.Scene {
   private targetManager!: TargetManager;
@@ -460,7 +461,7 @@ export class SixShotScene extends Phaser.Scene {
 
   /**
    * Handle shot fired at the fixed center crosshair position.
-   * Converts center screen coordinates to world coordinates via aim offset and records shot telemetry.
+   * Calculates logical crosshair world coordinates, reaction time, and precision distance for telemetry.
    */
   private handleShot(): void {
     if (this.roundState !== 'playing') {
@@ -489,7 +490,15 @@ export class SixShotScene extends Phaser.Scene {
       this.lastShotResult = 'HIT';
       this.lastHitTargetId = hitTarget.targetId;
 
-      const distanceToTarget = hitTarget.getDistanceFrom(worldX, worldY);
+      // Precision: Euclidean distance between crosshair logical position and target logical center
+      const dx = worldX - hitTarget.x;
+      const dy = worldY - hitTarget.y;
+      const precision = Number(Math.sqrt(dx * dx + dy * dy).toFixed(2));
+
+      // Reaction time: (shot_timestamp - target_spawn_time) in seconds
+      const spawnMs = new Date(hitTarget.spawnTime).getTime();
+      const shotMs = new Date(timestamp).getTime();
+      const reactionTime = Number(((shotMs - spawnMs) / 1000).toFixed(3));
 
       // Record HIT shot telemetry
       const shotTelemetry: ShotTelemetry = {
@@ -504,7 +513,9 @@ export class SixShotScene extends Phaser.Scene {
         target_y: hitTarget.y,
         target_size: hitTarget.size,
         target_speed: 0,
-        distance_to_target: distanceToTarget,
+        distance_to_target: precision,
+        reaction_time: reactionTime,
+        precision,
       };
       telemetryCollector.recordShot(shotTelemetry);
 
@@ -543,7 +554,7 @@ export class SixShotScene extends Phaser.Scene {
       this.lastShotResult = 'MISS';
       this.lastHitTargetId = 'None';
 
-      // Record MISS shot telemetry (target_id is null)
+      // Record MISS shot telemetry (target_id, target_x/y, reaction_time, precision are null)
       const shotTelemetry: ShotTelemetry = {
         shot_id: shotId,
         round_id: this.roundId,
@@ -552,6 +563,13 @@ export class SixShotScene extends Phaser.Scene {
         hit: false,
         player_x: worldX,
         player_y: worldY,
+        target_x: null,
+        target_y: null,
+        target_size: null,
+        target_speed: null,
+        distance_to_target: null,
+        reaction_time: null,
+        precision: null,
       };
       telemetryCollector.recordShot(shotTelemetry);
 
@@ -809,10 +827,10 @@ export class SixShotScene extends Phaser.Scene {
 
     const bgDim = this.add.rectangle(0, 0, 3000, 2000, 0x090b14, 0.88);
 
-    const panel = this.add.rectangle(0, 0, 480, 340, 0x121626, 0.95);
+    const panel = this.add.rectangle(0, 0, 480, 360, 0x121626, 0.95);
     panel.setStrokeStyle(2, 0x00ffcc, 0.8);
 
-    const title = this.add.text(0, -110, 'ROUND COMPLETE', {
+    const title = this.add.text(0, -125, 'ROUND COMPLETE', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '28px',
       color: '#00ffcc',
@@ -820,13 +838,13 @@ export class SixShotScene extends Phaser.Scene {
 
     this.resultsStatsText = this.add.text(0, -10, '', {
       fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-      fontSize: '16px',
+      fontSize: '15px',
       color: '#ffffff',
       align: 'center',
-      lineSpacing: 10,
+      lineSpacing: 8,
     }).setOrigin(0.5, 0.5);
 
-    const restartPrompt = this.add.text(0, 105, '[ TAP TO RESTART ]', {
+    const restartPrompt = this.add.text(0, 120, '[ TAP TO RESTART ]', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '20px',
       color: '#00ffcc',
@@ -845,15 +863,24 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   private updateResultsOverlay(): void {
+    const completedRound = telemetryCollector.getCurrentRound();
     const accuracy = this.shotsFired > 0
       ? ((this.hits / this.shotsFired) * 100).toFixed(1)
       : '0.0';
+    const avgReaction = (completedRound?.average_reaction_time && completedRound.average_reaction_time > 0)
+      ? `${completedRound.average_reaction_time.toFixed(2)}s`
+      : 'N/A';
+    const avgPrecision = (completedRound?.average_precision && completedRound.average_precision > 0)
+      ? `${completedRound.average_precision.toFixed(1)}px`
+      : 'N/A';
 
     const lines = [
-      `HITS        : ${this.hits}`,
-      `ACCURACY    : ${accuracy}%`,
-      `SHOTS FIRED : ${this.shotsFired}`,
-      `MISSES      : ${this.misses}`,
+      `HITS          : ${this.hits}`,
+      `ACCURACY      : ${accuracy}%`,
+      `AVG REACTION  : ${avgReaction}`,
+      `AVG PRECISION : ${avgPrecision}`,
+      `SHOTS FIRED   : ${this.shotsFired}`,
+      `MISSES        : ${this.misses}`,
     ];
 
     this.resultsStatsText.setText(lines.join('\n'));

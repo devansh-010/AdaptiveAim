@@ -27,8 +27,8 @@ export interface RoundTelemetry {
   accuracy: number;
   targets_hit: number;
   targets_spawned: number;
-  average_reaction_time?: number;
-  average_precision?: number;
+  average_reaction_time: number;
+  average_precision: number;
 }
 
 export interface TargetTelemetry {
@@ -54,13 +54,13 @@ export interface ShotTelemetry {
   hit: boolean;
   player_x: number;
   player_y: number;
-  target_x?: number;
-  target_y?: number;
-  target_size?: number;
-  target_speed?: number;
-  distance_to_target?: number;
-  reaction_time?: number;
-  precision?: number;
+  target_x: number | null;
+  target_y: number | null;
+  target_size: number | null;
+  target_speed: number | null;
+  distance_to_target: number | null;
+  reaction_time: number | null;
+  precision: number | null;
 }
 
 /**

@@ -63,6 +63,8 @@ export class TelemetryCollector {
       accuracy: 0,
       targets_hit: 0,
       targets_spawned: 0,
+      average_reaction_time: 0,
+      average_precision: 0,
     };
   }
 
@@ -113,14 +115,14 @@ export class TelemetryCollector {
   }
 
   /**
-   * Finalize current round recording and emit structured debug log.
+   * Finalize current round recording, calculate aggregate metrics, and emit structured debug log.
    */
   public endRound(): RoundTelemetry | null {
     if (!this.currentRound) return null;
 
     const endTime = new Date().toISOString();
     this.currentRound.end_time = endTime;
-    
+
     const startMs = new Date(this.currentRound.start_time).getTime();
     const endMs = new Date(endTime).getTime();
     this.currentRound.duration = Number(((endMs - startMs) / 1000).toFixed(2));
@@ -131,6 +133,38 @@ export class TelemetryCollector {
       );
     } else {
       this.currentRound.accuracy = 0;
+    }
+
+    // Calculate average reaction time from HIT shots ONLY
+    const hitShotsWithReaction = this.shotEvents.filter(
+      (s) => s.hit && s.reaction_time !== null && s.reaction_time !== undefined
+    );
+    if (hitShotsWithReaction.length > 0) {
+      const totalReaction = hitShotsWithReaction.reduce(
+        (acc, s) => acc + (s.reaction_time || 0),
+        0
+      );
+      this.currentRound.average_reaction_time = Number(
+        (totalReaction / hitShotsWithReaction.length).toFixed(3)
+      );
+    } else {
+      this.currentRound.average_reaction_time = 0;
+    }
+
+    // Calculate average precision (shot-to-target-center distance in pixels) from HIT shots ONLY
+    const hitShotsWithPrecision = this.shotEvents.filter(
+      (s) => s.hit && s.precision !== null && s.precision !== undefined
+    );
+    if (hitShotsWithPrecision.length > 0) {
+      const totalPrecision = hitShotsWithPrecision.reduce(
+        (acc, s) => acc + (s.precision || 0),
+        0
+      );
+      this.currentRound.average_precision = Number(
+        (totalPrecision / hitShotsWithPrecision.length).toFixed(2)
+      );
+    } else {
+      this.currentRound.average_precision = 0;
     }
 
     const completedRound = { ...this.currentRound };
