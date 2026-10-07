@@ -158,6 +158,10 @@ export class TargetManager {
     return Array.from(this.activeTargets.values());
   }
 
+  public getTarget(targetId: string): Target | undefined {
+    return this.activeTargets.get(targetId);
+  }
+
   /**
    * Check if a point (x, y) hits any active target.
    * Returns the hit Target entity, or null if no target was hit.

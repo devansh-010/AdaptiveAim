@@ -1,28 +1,32 @@
 import Phaser from 'phaser';
-import { GAME_CONFIG, SIX_SHOT_ROUND_DURATION } from '../config/gameConfig';
+import { GAME_CONFIG, SIX_SHOT_ROUND_DURATION, SIX_SHOT_AIM_SENSITIVITY } from '../config/gameConfig';
 import { TargetManager } from '../systems/TargetManager';
 import { generateRoundId } from '../../telemetry/ids';
 import type { Target } from '../entities/Target';
 
 /**
  * Texture key for the circular target graphic.
- * Generated once in preload/create and reused for all target sprites.
  */
 const TARGET_TEXTURE_KEY = 'target_circle';
+
+/**
+ * Texture key for the weapon / hand SVG asset.
+ */
+const WEAPON_TEXTURE_KEY = 'weapon_hand_gun';
 
 export type RoundState = 'start' | 'playing' | 'timeOver' | 'results';
 
 /**
- * SixShotScene is the primary Phaser scene for the Six Shot aim training mode.
+ * SixShotScene is the primary Phaser scene for the Six Shot FPS aim trainer mode.
  *
  * Responsibilities:
  * - Phaser scene lifecycle & responsive viewport scaling
- * - managing round state flow (START -> PLAYING -> TIMEOVER -> RESULTS -> RESTART)
- * - managing the 30-second round timer & TIME OVER animation transition
- * - asking TargetManager to populate and maintain targets
- * - rendering targets and overlay screens via Phaser GameObjects
- *
- * It does NOT contain target spawning algorithms directly.
+ * - FPS-style aim control via browser Pointer Lock API
+ * - Fixed center crosshair aiming system & relative target/world movement
+ * - Anchored first-person weapon visual & click recoil feedback
+ * - Managing round state flow (START -> PLAYING -> TIMEOVER -> RESULTS -> RESTART)
+ * - 30-second round timer & TIME OVER transition
+ * - Spawning, rendering, hit detection, and replacement of targets
  */
 export class SixShotScene extends Phaser.Scene {
   private targetManager!: TargetManager;
@@ -30,14 +34,17 @@ export class SixShotScene extends Phaser.Scene {
 
   /**
    * Map of targetId → Phaser Image game object for rendering.
-   * Keeps visual objects tied to domain entities without leaking Phaser
-   * references into the Target entity class.
    */
   private targetSprites: Map<string, Phaser.GameObjects.Image> = new Map();
 
   // Round flow state
   private roundState: RoundState = 'start';
   private remainingTime: number = SIX_SHOT_ROUND_DURATION;
+
+  // Pointer lock & FPS aiming system state
+  private pointerLocked: boolean = false;
+  private aimOffsetX: number = 0;
+  private aimOffsetY: number = 0;
 
   // Round statistics
   private shotsFired: number = 0;
@@ -69,12 +76,18 @@ export class SixShotScene extends Phaser.Scene {
   private resultsStatsText!: Phaser.GameObjects.Text;
   private timeOverText!: Phaser.GameObjects.Text;
 
+  // FPS Aiming visual elements
+  private crosshairContainer!: Phaser.GameObjects.Container;
+  private weaponImage!: Phaser.GameObjects.Image;
+  private lockNoticeText!: Phaser.GameObjects.Text;
+
   constructor() {
     super({ key: 'SixShotScene' });
   }
 
   preload(): void {
-    // Target texture is generated programmatically in create()
+    // Load modern SVG FPS weapon/hand illustration asset
+    this.load.image(WEAPON_TEXTURE_KEY, 'assets/aim-hand-gun.svg');
   }
 
   create(): void {
@@ -88,16 +101,16 @@ export class SixShotScene extends Phaser.Scene {
 
     this.cameras.main.setBackgroundColor(bgHex);
 
-    // Generate the modern glowing circular target texture
+    // Generate circular target texture
     this.generateTargetTexture();
 
     // Initialize TargetManager with current viewport dimensions
     this.targetManager = new TargetManager(width, height);
 
-    // Generate a round ID for this session
+    // Generate round ID for this session
     this.roundId = generateRoundId();
 
-    // Set initial round state to start (timer paused at 30s)
+    // Set initial round state to start
     this.roundState = 'start';
     this.remainingTime = SIX_SHOT_ROUND_DURATION;
     this.shotsFired = 0;
@@ -105,22 +118,35 @@ export class SixShotScene extends Phaser.Scene {
     this.misses = 0;
     this.lastShotResult = 'None';
     this.lastHitTargetId = 'None';
+    this.aimOffsetX = 0;
+    this.aimOffsetY = 0;
 
-    // Spawn initial 6 targets and render them behind start screen
+    // Spawn initial 6 targets
     const targets = this.targetManager.spawnInitialTargets(this.roundId);
     for (const target of targets) {
       this.renderTarget(target);
     }
 
-    // Create HUD, Exit Button, and Overlays
+    // Create HUD, Exit Button, Crosshair, Weapon visual, Pointer Lock fallback, and Overlays
     this.createHud();
     this.createExitButton();
+    this.createCrosshair();
+    this.createWeaponVisual();
+    this.createLockNotice();
     this.createStartOverlay();
     this.createResultsOverlay();
 
-    // Register pointerdown event listener for round flow and shooting
+    // Register Pointer Lock status change listeners
+    this.setupPointerLockListeners();
+
+    // Register pointer down listener for gesture lock and shooting
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       this.handlePointerDown(pointer.worldX, pointer.worldY);
+    });
+
+    // Register pointer move listener for FPS relative mouse aiming
+    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      this.handlePointerMove(pointer);
     });
 
     // Listen to window / canvas resize events
@@ -134,6 +160,9 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   override update(_time: number, delta: number): void {
+    // Continuously update rendered target positions relative to aim offset
+    this.updateTargetPositions();
+
     // Timer only ticks during active PLAYING state
     if (this.roundState !== 'playing') {
       return;
@@ -150,7 +179,89 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   /**
-   * Handle dynamic viewport resize to keep HUD, overlays, exit button, and spawn bounds aligned.
+   * Update visual sprite positions for all targets based on logical spawn position and current aim offset.
+   */
+  private updateTargetPositions(): void {
+    for (const [targetId, sprite] of this.targetSprites.entries()) {
+      const target = this.targetManager.getTarget(targetId);
+      if (target) {
+        sprite.setPosition(target.x - this.aimOffsetX, target.y - this.aimOffsetY);
+      }
+    }
+  }
+
+  /**
+   * Handle relative mouse movement when pointer is locked during gameplay.
+   * Mouse movement shifts aim offset; targets appear to move in opposite direction relative to center crosshair.
+   */
+  private handlePointerMove(pointer: Phaser.Input.Pointer): void {
+    if (this.roundState === 'playing' && this.pointerLocked) {
+      const movementX = pointer.movementX || 0;
+      const movementY = pointer.movementY || 0;
+
+      this.aimOffsetX += movementX * SIX_SHOT_AIM_SENSITIVITY;
+      this.aimOffsetY += movementY * SIX_SHOT_AIM_SENSITIVITY;
+
+      // Clamp aim offset to prevent targets from being lost indefinitely outside viewport
+      const maxOffset = Math.max(this.scale.width, this.scale.height) * 0.8;
+      this.aimOffsetX = Phaser.Math.Clamp(this.aimOffsetX, -maxOffset, maxOffset);
+      this.aimOffsetY = Phaser.Math.Clamp(this.aimOffsetY, -maxOffset, maxOffset);
+    }
+  }
+
+  /**
+   * Listen to browser pointer lock change events.
+   */
+  private setupPointerLockListeners(): void {
+    const updateLockStatus = () => {
+      const isLocked = document.pointerLockElement === this.game.canvas;
+      this.pointerLocked = isLocked;
+
+      if (this.lockNoticeText) {
+        this.lockNoticeText.setVisible(this.roundState === 'playing' && !isLocked);
+      }
+    };
+
+    document.addEventListener('pointerlockchange', updateLockStatus);
+    document.addEventListener('mozpointerlockchange', updateLockStatus);
+
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      document.removeEventListener('pointerlockchange', updateLockStatus);
+      document.removeEventListener('mozpointerlockchange', updateLockStatus);
+      this.releasePointerLock();
+    });
+  }
+
+  /**
+   * Request browser pointer lock.
+   */
+  private requestPointerLock(): void {
+    try {
+      if (this.input && this.input.mouse) {
+        this.input.mouse.requestPointerLock();
+      }
+    } catch (e) {
+      console.warn('[SixShotScene] Pointer lock request error:', e);
+    }
+  }
+
+  /**
+   * Release browser pointer lock.
+   */
+  private releasePointerLock(): void {
+    try {
+      if (document.pointerLockElement) {
+        document.exitPointerLock();
+      } else if (this.input && this.input.mouse && this.input.mouse.locked) {
+        this.input.mouse.releasePointerLock();
+      }
+    } catch (e) {
+      console.warn('[SixShotScene] Pointer lock release error:', e);
+    }
+  }
+
+  /**
+   * Handle dynamic viewport resize to keep HUD, overlays, exit button, weapon, and crosshair aligned.
    */
   private handleResize(width: number, height: number): void {
     if (this.targetManager) {
@@ -171,14 +282,24 @@ export class SixShotScene extends Phaser.Scene {
     if (this.timeOverText) {
       this.timeOverText.setPosition(width / 2, height / 2);
     }
+    if (this.crosshairContainer) {
+      this.crosshairContainer.setPosition(width / 2, height / 2);
+    }
+    if (this.weaponImage) {
+      this.weaponImage.setPosition(width, height);
+    }
+    if (this.lockNoticeText) {
+      this.lockNoticeText.setPosition(width / 2, height / 2 + 100);
+    }
   }
 
   /**
    * Main pointer input router based on current round state.
    */
   private handlePointerDown(x: number, y: number): void {
-    // 1. Check if Exit Button was clicked
+    // 1. Exit Button click check
     if (this.exitButton && this.exitButton.getBounds().contains(x, y)) {
+      this.releasePointerLock();
       const onExit = this.game.registry.get('onExit');
       if (typeof onExit === 'function') {
         onExit();
@@ -189,41 +310,58 @@ export class SixShotScene extends Phaser.Scene {
     // 2. Route interaction based on roundState
     if (this.roundState === 'start') {
       this.startRound();
+      this.requestPointerLock();
     } else if (this.roundState === 'results') {
       this.restartRound();
+      this.requestPointerLock();
     } else if (this.roundState === 'playing') {
-      this.handleShot(x, y);
+      if (!this.pointerLocked) {
+        this.requestPointerLock();
+      } else {
+        this.handleShot();
+      }
     }
-    // If roundState === 'timeOver', ignore clicks completely during transition
   }
 
   /**
-   * Start a new round: set state to playing and begin timer.
+   * Start a new round: set state to playing, reset aim offset, and begin timer.
    */
   private startRound(): void {
     this.roundState = 'playing';
     this.remainingTime = SIX_SHOT_ROUND_DURATION;
+    this.aimOffsetX = 0;
+    this.aimOffsetY = 0;
+
     this.startContainer.setVisible(false);
     this.resultsContainer.setVisible(false);
     if (this.timeOverText) {
       this.timeOverText.setVisible(false);
     }
+    if (this.lockNoticeText) {
+      this.lockNoticeText.setVisible(!this.pointerLocked);
+    }
+
     this.updateHud();
     console.log(`[SixShotScene] Round ${this.roundId} started.`);
   }
 
   /**
-   * Trigger the animated TIME OVER transition state when the 30s timer reaches zero.
+   * Trigger the animated TIME OVER transition state when 30s timer reaches zero.
    */
   private triggerTimeOver(): void {
     this.roundState = 'timeOver';
     this.remainingTime = 0;
+    this.releasePointerLock();
+
+    if (this.lockNoticeText) {
+      this.lockNoticeText.setVisible(false);
+    }
+
     this.updateHud();
 
     const centerX = this.scale.width / 2;
     const centerY = this.scale.height / 2;
 
-    // Create TIME OVER text object if not already instantiated
     if (!this.timeOverText) {
       this.timeOverText = this.add.text(centerX, centerY, 'TIME OVER', {
         fontFamily: 'Consolas, Monaco, "Courier New", monospace',
@@ -236,13 +374,11 @@ export class SixShotScene extends Phaser.Scene {
       this.timeOverText.setDepth(300);
     }
 
-    // Set initial animation properties
     this.timeOverText.setPosition(centerX, centerY);
     this.timeOverText.setScale(0.75);
     this.timeOverText.setAlpha(0);
     this.timeOverText.setVisible(true);
 
-    // Phase 1: Scale up + Fade in (~400ms)
     this.tweens.add({
       targets: this.timeOverText,
       scaleX: 1.0,
@@ -251,7 +387,6 @@ export class SixShotScene extends Phaser.Scene {
       duration: 400,
       ease: 'Power2',
       onComplete: () => {
-        // Phase 2: Hold for 500ms, then Phase 3: Scale out + Fade out (~400ms)
         this.time.delayedCall(500, () => {
           this.tweens.add({
             targets: this.timeOverText,
@@ -273,11 +408,13 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   /**
-   * Conclude active round: set state to results and show summary overlay.
+   * Conclude active round: set state to results, release pointer lock, and show summary overlay.
    */
   private endRound(): void {
     this.remainingTime = 0;
     this.roundState = 'results';
+    this.releasePointerLock();
+
     this.updateResultsOverlay();
     this.resultsContainer.setVisible(true);
     this.updateHud();
@@ -285,7 +422,7 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   /**
-   * Reset round statistics, recreate fresh targets, and start a new round.
+   * Reset round statistics, recreate fresh targets, reset aim offset, and start new round.
    */
   private restartRound(): void {
     // 1. Destroy existing Phaser target sprites
@@ -300,66 +437,80 @@ export class SixShotScene extends Phaser.Scene {
     // 3. Generate new round ID
     this.roundId = generateRoundId();
 
-    // 4. Reset stats
+    // 4. Reset stats and aim offsets
     this.shotsFired = 0;
     this.hits = 0;
     this.misses = 0;
     this.lastShotResult = 'None';
     this.lastHitTargetId = 'None';
+    this.aimOffsetX = 0;
+    this.aimOffsetY = 0;
 
-    // 5. Spawn 6 fresh targets using existing TargetManager logic
+    // 5. Spawn 6 fresh targets
     const targets = this.targetManager.spawnInitialTargets(this.roundId);
     for (const target of targets) {
       this.renderTarget(target);
     }
 
-    // 6. Transition state to playing and start timer
+    // 6. Transition state to playing and start round
     this.startRound();
   }
 
   /**
-   * Handle mouse pointer click event during PLAYING state.
-   * Determines whether the click resulted in a HIT or MISS.
-   * On HIT: destroys the hit target, spawns an immediate replacement, and provides hit visual feedback.
-   * On MISS: displays a miss visual pulse.
-   * Updates the Gameplay HUD metrics on every shot.
+   * Handle shot fired at the fixed center crosshair position.
+   * Converts center screen coordinates to world coordinates via aim offset.
    */
-  private handleShot(x: number, y: number): void {
+  private handleShot(): void {
     if (this.roundState !== 'playing') {
       return;
     }
 
     this.shotsFired++;
 
-    const hitTarget = this.targetManager.checkHit(x, y);
+    // Fixed center crosshair screen position
+    const centerX = this.scale.width / 2;
+    const centerY = this.scale.height / 2;
+
+    // World coordinates corresponding to crosshair position
+    const worldX = centerX + this.aimOffsetX;
+    const worldY = centerY + this.aimOffsetY;
+
+    // Trigger subtle weapon recoil and flash
+    this.triggerWeaponRecoil();
+
+    const hitTarget = this.targetManager.checkHit(worldX, worldY);
 
     if (hitTarget) {
       this.hits++;
       this.lastShotResult = 'HIT';
       this.lastHitTargetId = hitTarget.targetId;
 
-      // 1. Visual feedback on hit target position (glowing ring expansion)
+      // Screen position of hit target
+      const hitScreenX = hitTarget.x - this.aimOffsetX;
+      const hitScreenY = hitTarget.y - this.aimOffsetY;
+
+      // Visual feedback: glowing ring expansion at target position
       const hitGfx = this.add.graphics();
       hitGfx.fillStyle(0x00ffff, 0.5);
-      hitGfx.fillCircle(hitTarget.x, hitTarget.y, hitTarget.size + 3);
+      hitGfx.fillCircle(hitScreenX, hitScreenY, hitTarget.size + 3);
       hitGfx.lineStyle(2, 0xffffff, 0.9);
-      hitGfx.strokeCircle(hitTarget.x, hitTarget.y, hitTarget.size + 8);
+      hitGfx.strokeCircle(hitScreenX, hitScreenY, hitTarget.size + 8);
 
       this.time.delayedCall(120, () => {
         hitGfx.destroy();
       });
 
-      // 2. Destroy hit target's Phaser visual object
+      // Destroy hit target's Phaser visual object
       const sprite = this.targetSprites.get(hitTarget.targetId);
       if (sprite) {
         sprite.destroy();
         this.targetSprites.delete(hitTarget.targetId);
       }
 
-      // 3. Destroy target domain entity in TargetManager
+      // Destroy target domain entity in TargetManager
       this.targetManager.destroyTarget(hitTarget.targetId);
 
-      // 4. Immediately spawn replacement target to maintain active target count = 6
+      // Immediately spawn replacement target to maintain active count = 6
       const newTargets = this.targetManager.maintainTargetCount(this.roundId);
       for (const newTarget of newTargets) {
         this.renderTarget(newTarget);
@@ -369,12 +520,12 @@ export class SixShotScene extends Phaser.Scene {
       this.lastShotResult = 'MISS';
       this.lastHitTargetId = 'None';
 
-      // Visual feedback: temporary red pulse at click location
+      // Visual feedback: temporary red pulse at center crosshair location
       const missGfx = this.add.graphics();
       missGfx.fillStyle(0xff3344, 0.6);
-      missGfx.fillCircle(x, y, 4);
+      missGfx.fillCircle(centerX, centerY, 4);
       missGfx.lineStyle(2, 0xff3344, 0.8);
-      missGfx.strokeCircle(x, y, 10);
+      missGfx.strokeCircle(centerX, centerY, 10);
 
       this.time.delayedCall(180, () => {
         missGfx.destroy();
@@ -385,7 +536,112 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   /**
-   * Create the unobtrusive Exit Button in top-right corner.
+   * Play subtle weapon recoil movement animation and muzzle flash.
+   */
+  private triggerWeaponRecoil(): void {
+    if (!this.weaponImage) return;
+
+    const baseWidth = this.scale.width;
+    const baseHeight = this.scale.height;
+
+    this.tweens.add({
+      targets: this.weaponImage,
+      x: baseWidth + 8,
+      y: baseHeight + 10,
+      rotation: 0.03,
+      duration: 45,
+      yoyo: true,
+      ease: 'Quad.easeOut',
+      onComplete: () => {
+        this.weaponImage.setPosition(baseWidth, baseHeight);
+        this.weaponImage.setRotation(0);
+      },
+    });
+
+    // Muzzle flash graphic at barrel tip
+    const flashX = baseWidth - 250;
+    const flashY = baseHeight - 240;
+    const flashGfx = this.add.graphics();
+    flashGfx.fillStyle(0x00ffff, 0.8);
+    flashGfx.fillCircle(flashX, flashY, 14);
+    flashGfx.fillStyle(0xffffff, 0.95);
+    flashGfx.fillCircle(flashX, flashY, 7);
+    flashGfx.setDepth(130);
+
+    this.time.delayedCall(50, () => {
+      flashGfx.destroy();
+    });
+  }
+
+  /**
+   * Create fixed center crosshair permanently positioned at (width/2, height/2).
+   */
+  private createCrosshair(): void {
+    const centerX = this.scale.width / 2;
+    const centerY = this.scale.height / 2;
+
+    const gfx = this.add.graphics();
+    const gap = 4;
+    const length = 8;
+    const thickness = 1.5;
+
+    // Crosshair dark outline for contrast
+    gfx.lineStyle(thickness + 1, 0x000000, 0.7);
+    gfx.lineBetween(0, -gap, 0, -gap - length);
+    gfx.lineBetween(0, gap, 0, gap + length);
+    gfx.lineBetween(-gap, 0, -gap - length, 0);
+    gfx.lineBetween(gap, 0, gap + length, 0);
+
+    // Crosshair main cyan lines
+    gfx.lineStyle(thickness, 0x00ffff, 0.95);
+    gfx.lineBetween(0, -gap, 0, -gap - length);
+    gfx.lineBetween(0, gap, 0, gap + length);
+    gfx.lineBetween(-gap, 0, -gap - length, 0);
+    gfx.lineBetween(gap, 0, gap + length, 0);
+
+    // Subtle center dot
+    gfx.fillStyle(0xffffff, 0.9);
+    gfx.fillCircle(0, 0, 1);
+
+    this.crosshairContainer = this.add.container(centerX, centerY, [gfx]);
+    this.crosshairContainer.setDepth(150);
+  }
+
+  /**
+   * Create modern FPS weapon visual anchored to lower-right corner of viewport.
+   */
+  private createWeaponVisual(): void {
+    const width = this.scale.width;
+    const height = this.scale.height;
+
+    this.weaponImage = this.add.image(width, height, WEAPON_TEXTURE_KEY);
+    this.weaponImage.setOrigin(1.0, 1.0);
+    this.weaponImage.setDisplaySize(320, 320);
+    this.weaponImage.setDepth(120);
+  }
+
+  /**
+   * Create fallback prompt shown when pointer lock is lost during active gameplay.
+   */
+  private createLockNotice(): void {
+    const centerX = this.scale.width / 2;
+    const centerY = this.scale.height / 2 + 100;
+
+    this.lockNoticeText = this.add.text(centerX, centerY, '[ CLICK TO CAPTURE MOUSE ]', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '16px',
+      color: '#00e5ff',
+      backgroundColor: '#090b14dd',
+      padding: { x: 14, y: 8 },
+    })
+    .setOrigin(0.5, 0.5)
+    .setDepth(210);
+
+    this.lockNoticeText.setVisible(false);
+  }
+
+  /**
+   * Create Exit Button in top-right corner.
    */
   private createExitButton(): void {
     const margin = 20;
@@ -404,7 +660,7 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   /**
-   * Create the horizontal Gameplay HUD panel at top-center of viewport.
+   * Create Gameplay HUD panel at top-center.
    */
   private createHud(): void {
     const centerX = this.scale.width / 2;
@@ -459,13 +715,10 @@ export class SixShotScene extends Phaser.Scene {
       this.hudAccText,
     ]);
 
-    this.hudContainer.setDepth(100);
+    this.hudContainer.setDepth(200);
     this.updateHud();
   }
 
-  /**
-   * Update the text metrics displayed on the Gameplay HUD.
-   */
   private updateHud(): void {
     const accuracy = this.shotsFired > 0
       ? ((this.hits / this.shotsFired) * 100).toFixed(1)
@@ -476,9 +729,6 @@ export class SixShotScene extends Phaser.Scene {
     this.hudAccText.setText(`${accuracy}%`);
   }
 
-  /**
-   * Create the Start Screen UI Overlay container.
-   */
   private createStartOverlay(): void {
     const centerX = this.scale.width / 2;
     const centerY = this.scale.height / 2;
@@ -514,13 +764,10 @@ export class SixShotScene extends Phaser.Scene {
       startPrompt,
     ]);
 
-    this.startContainer.setDepth(200);
+    this.startContainer.setDepth(220);
     this.startContainer.setVisible(true);
   }
 
-  /**
-   * Create the Results Screen UI Overlay container.
-   */
   private createResultsOverlay(): void {
     const centerX = this.scale.width / 2;
     const centerY = this.scale.height / 2;
@@ -558,13 +805,10 @@ export class SixShotScene extends Phaser.Scene {
       restartPrompt,
     ]);
 
-    this.resultsContainer.setDepth(200);
+    this.resultsContainer.setDepth(220);
     this.resultsContainer.setVisible(false);
   }
 
-  /**
-   * Update text content of Results Overlay using final round statistics.
-   */
   private updateResultsOverlay(): void {
     const accuracy = this.shotsFired > 0
       ? ((this.hits / this.shotsFired) * 100).toFixed(1)
@@ -580,48 +824,36 @@ export class SixShotScene extends Phaser.Scene {
     this.resultsStatsText.setText(lines.join('\n'));
   }
 
-  /**
-   * Generate the modern glowing circular target texture using Phaser 4 Graphics API.
-   * Replaces the bullseye with a sleek 22px radius luminous cyan ball.
-   */
   private generateTargetTexture(): void {
-    const radius = GAME_CONFIG.sixShot.targetRadius; // 22px
+    const radius = GAME_CONFIG.sixShot.targetRadius;
     const padding = 6;
     const size = (radius + padding) * 2;
     const center = size / 2;
 
     const graphics = this.add.graphics();
 
-    // 1. Outer subtle luminous glow
     graphics.fillStyle(0x00e5ff, 0.25);
     graphics.fillCircle(center, center, radius + 4);
 
-    // 2. Main solid cyan target ball
     graphics.fillStyle(0x00ffff, 1);
     graphics.fillCircle(center, center, radius);
 
-    // 3. Core highlight dot
     graphics.fillStyle(0xffffff, 0.85);
     graphics.fillCircle(center - radius * 0.25, center - radius * 0.25, radius * 0.35);
 
-    // 4. Subtle stroke ring
     graphics.lineStyle(1.5, 0x88ffff, 0.9);
     graphics.strokeCircle(center, center, radius);
 
-    // Bake to texture and destroy temporary Graphics object
     graphics.generateTexture(TARGET_TEXTURE_KEY, size, size);
     graphics.destroy();
   }
 
-  /**
-   * Create a Phaser Image for a Target entity at its position.
-   * The image is centered on the target's logical coordinates.
-   */
   private renderTarget(target: Target): void {
-    const image = this.add.image(target.x, target.y, TARGET_TEXTURE_KEY);
-
-    // Phaser Images have origin at 0.5 by default, centering the texture on (x, y).
-
+    const image = this.add.image(
+      target.x - this.aimOffsetX,
+      target.y - this.aimOffsetY,
+      TARGET_TEXTURE_KEY
+    );
     this.targetSprites.set(target.targetId, image);
   }
 }

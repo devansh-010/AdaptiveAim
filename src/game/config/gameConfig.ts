@@ -28,6 +28,7 @@ export const SIX_SHOT_TARGET_COUNT = 6;
 export const SIX_SHOT_DURATION = 30; // seconds
 export const SIX_SHOT_ROUND_DURATION = SIX_SHOT_DURATION; // seconds
 export const SIX_SHOT_TARGET_SIZE = 22; // radius in pixels
+export const SIX_SHOT_AIM_SENSITIVITY = 1.0;
 
 /**
  * Margin from canvas edges where targets will not spawn.
