@@ -39,3 +39,7 @@ export function generateTargetId(): string {
 export function generateShotId(): string {
   return generateUniqueId('shot');
 }
+
+export function generateTrajectoryId(): string {
+  return generateUniqueId('traj');
+}

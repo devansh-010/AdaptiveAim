@@ -1,9 +1,9 @@
 import Phaser from 'phaser';
 import { GAME_CONFIG, SIX_SHOT_ROUND_DURATION, SIX_SHOT_AIM_SENSITIVITY } from '../config/gameConfig';
 import { TargetManager } from '../systems/TargetManager';
-import { generateRoundId, generateShotId } from '../../telemetry/ids';
+import { generateRoundId, generateShotId, generateTrajectoryId } from '../../telemetry/ids';
 import { telemetryCollector } from '../../telemetry/TelemetryCollector';
-import type { ShotTelemetry } from '../../telemetry/types';
+import type { ShotTelemetry, TrajectorySample, TrajectorySegment } from '../../telemetry/types';
 import type { Target } from '../entities/Target';
 
 /**
@@ -55,6 +55,51 @@ export class SixShotScene extends Phaser.Scene {
   private misses: number = 0;
   private lastShotResult: string = 'None';
   private lastHitTargetId: string = 'None';
+
+  // Trajectory sampling state
+  private trajectorySamplingActive: boolean = false;
+  private trajectorySamplingTimer: ReturnType<typeof setInterval> | null = null;
+  private pendingTrajectorySamples: TrajectorySample[] = [];
+  private trajectorySegmentStartTime: string = '';
+  private accumulatedMovementX: number = 0;
+  private accumulatedMovementY: number = 0;
+  private boundRawMouseHandler: ((event: MouseEvent) => void) | null = null;
+  private boundDocumentMouseHandler: ((event: MouseEvent) => void) | null = null;
+
+  // Aggregate diagnostic instrumentation counters
+  private diagnosticCounters = {
+    rawEventsReceivedWhilePlaying: 0,
+    rawEventsReceivedWhileLocked: 0,
+    rawEventsWithNonzeroDelta: 0,
+    rawEventsRejectedByGuard: {
+      samplingInactive: 0,
+      notPlaying: 0,
+      notLocked: 0,
+    },
+    sumRawAbsMovementX: 0,
+    sumRawAbsMovementY: 0,
+
+    phaserEventsReceivedWhilePlaying: 0,
+    phaserEventsReceivedWhileLocked: 0,
+    phaserEventsWithNonzeroDelta: 0,
+    sumPhaserAbsMovementX: 0,
+    sumPhaserAbsMovementY: 0,
+
+    documentEventsReceivedWhilePlaying: 0,
+    documentEventsReceivedWhileLocked: 0,
+    documentEventsTargetCanvas: 0,
+    documentEventsTargetOther: 0,
+
+    sampleIntervalsTotal: 0,
+    sampleIntervalsSkippedGuard: 0,
+    samplesWithNonzeroDelta: 0,
+    samplesWithZeroDelta: 0,
+    intervalsWithZeroEvents: 0,
+    intervalsWithNonzeroEvents: 0,
+    eventsInCurrentInterval: 0,
+    eventsPerIntervalMin: Infinity,
+    eventsPerIntervalMax: 0,
+  };
 
   public getLastShotResult(): string {
     return this.lastShotResult;
@@ -188,17 +233,26 @@ export class SixShotScene extends Phaser.Scene {
    * Handle relative mouse movement when pointer is locked during gameplay.
    */
   private handlePointerMove(pointer: Phaser.Input.Pointer): void {
-    if (this.roundState === 'playing' && this.pointerLocked) {
-      const movementX = pointer.movementX || 0;
-      const movementY = pointer.movementY || 0;
+    if (this.roundState === 'playing') {
+      this.diagnosticCounters.phaserEventsReceivedWhilePlaying++;
+      if (this.pointerLocked) {
+        this.diagnosticCounters.phaserEventsReceivedWhileLocked++;
+        const movementX = pointer.movementX || 0;
+        const movementY = pointer.movementY || 0;
+        if (movementX !== 0 || movementY !== 0) {
+          this.diagnosticCounters.phaserEventsWithNonzeroDelta++;
+          this.diagnosticCounters.sumPhaserAbsMovementX += Math.abs(movementX);
+          this.diagnosticCounters.sumPhaserAbsMovementY += Math.abs(movementY);
+        }
 
-      this.aimOffsetX += movementX * SIX_SHOT_AIM_SENSITIVITY;
-      this.aimOffsetY += movementY * SIX_SHOT_AIM_SENSITIVITY;
+        this.aimOffsetX += movementX * SIX_SHOT_AIM_SENSITIVITY;
+        this.aimOffsetY += movementY * SIX_SHOT_AIM_SENSITIVITY;
 
-      // Clamp aim offset to prevent targets from being lost indefinitely outside viewport
-      const maxOffset = Math.max(this.scale.width, this.scale.height) * 0.8;
-      this.aimOffsetX = Phaser.Math.Clamp(this.aimOffsetX, -maxOffset, maxOffset);
-      this.aimOffsetY = Phaser.Math.Clamp(this.aimOffsetY, -maxOffset, maxOffset);
+        // Clamp aim offset to prevent targets from being lost indefinitely outside viewport
+        const maxOffset = Math.max(this.scale.width, this.scale.height) * 0.8;
+        this.aimOffsetX = Phaser.Math.Clamp(this.aimOffsetX, -maxOffset, maxOffset);
+        this.aimOffsetY = Phaser.Math.Clamp(this.aimOffsetY, -maxOffset, maxOffset);
+      }
     }
   }
 
@@ -221,6 +275,7 @@ export class SixShotScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       document.removeEventListener('pointerlockchange', updateLockStatus);
       document.removeEventListener('mozpointerlockchange', updateLockStatus);
+      this.removeRawMouseListener();
       this.releasePointerLock();
     });
   }
@@ -336,10 +391,13 @@ export class SixShotScene extends Phaser.Scene {
     // 1. Clear any existing targets
     this.clearTargets();
 
-    // 2. Generate unique round ID
+    // 2. Stop any previous trajectory collection (ensures clean state on restart)
+    this.stopTrajectoryCollection();
+
+    // 3. Generate unique round ID
     this.roundId = generateRoundId();
 
-    // 3. Reset round statistics & aim offset
+    // 4. Reset round statistics & aim offset
     this.roundState = 'playing';
     this.remainingTime = SIX_SHOT_ROUND_DURATION;
     this.shotsFired = 0;
@@ -350,16 +408,19 @@ export class SixShotScene extends Phaser.Scene {
     this.aimOffsetX = 0;
     this.aimOffsetY = 0;
 
-    // 4. Initialize Telemetry collector for this round
+    // 5. Initialize Telemetry collector for this round
     telemetryCollector.startRound(this.roundId, 'six_shot', 'fixed');
 
-    // 5. Spawn initial 6 targets (records target spawn events in telemetry)
+    // 6. Spawn initial 6 targets (records target spawn events in telemetry)
     const targets = this.targetManager.spawnInitialTargets(this.roundId);
     for (const target of targets) {
       this.renderTarget(target);
     }
 
-    // 6. Update UI visibility
+    // 7. Start trajectory sampling for this round
+    this.startTrajectoryCollection();
+
+    // 8. Update UI visibility
     this.startContainer.setVisible(false);
     this.resultsContainer.setVisible(false);
     if (this.timeOverText) {
@@ -379,7 +440,14 @@ export class SixShotScene extends Phaser.Scene {
   private triggerTimeOver(): void {
     this.roundState = 'timeOver';
     this.remainingTime = 0;
+
+    // Stop trajectory sampling and finalize trailing segment before ending the round
+    this.stopTrajectoryCollection();
+
     this.releasePointerLock();
+
+    // Log compact raw mouse diagnostic summary
+    this.logRawMouseDiagnosticSummary();
 
     // Finalize telemetry recording for current round
     telemetryCollector.endRound();
@@ -484,6 +552,13 @@ export class SixShotScene extends Phaser.Scene {
     const hitTarget = this.targetManager.checkHit(worldX, worldY);
     const shotId = generateShotId();
     const timestamp = new Date().toISOString();
+
+    // Finalize the pre-shot trajectory segment with this shot's ID
+    this.finalizeTrajectorySegment(
+      shotId,
+      hitTarget ? hitTarget.targetId : null,
+      timestamp
+    );
 
     if (hitTarget) {
       this.hits++;
@@ -917,5 +992,308 @@ export class SixShotScene extends Phaser.Scene {
       TARGET_TEXTURE_KEY
     );
     this.targetSprites.set(target.targetId, image);
+  }
+
+  // ============================================================
+  // Trajectory Sampling System
+  // ============================================================
+
+  /**
+   * Start trajectory sampling for the current round.
+   * Sets up a ~60Hz interval timer that captures aim position and accumulated mouse deltas.
+   */
+  private resetDiagnosticCounters(): void {
+    this.diagnosticCounters = {
+      rawEventsReceivedWhilePlaying: 0,
+      rawEventsReceivedWhileLocked: 0,
+      rawEventsWithNonzeroDelta: 0,
+      rawEventsRejectedByGuard: {
+        samplingInactive: 0,
+        notPlaying: 0,
+        notLocked: 0,
+      },
+      sumRawAbsMovementX: 0,
+      sumRawAbsMovementY: 0,
+
+      phaserEventsReceivedWhilePlaying: 0,
+      phaserEventsReceivedWhileLocked: 0,
+      phaserEventsWithNonzeroDelta: 0,
+      sumPhaserAbsMovementX: 0,
+      sumPhaserAbsMovementY: 0,
+
+      documentEventsReceivedWhilePlaying: 0,
+      documentEventsReceivedWhileLocked: 0,
+      documentEventsTargetCanvas: 0,
+      documentEventsTargetOther: 0,
+
+      sampleIntervalsTotal: 0,
+      sampleIntervalsSkippedGuard: 0,
+      samplesWithNonzeroDelta: 0,
+      samplesWithZeroDelta: 0,
+      intervalsWithZeroEvents: 0,
+      intervalsWithNonzeroEvents: 0,
+      eventsInCurrentInterval: 0,
+      eventsPerIntervalMin: Infinity,
+      eventsPerIntervalMax: 0,
+    };
+  }
+
+  private logRawMouseDiagnosticSummary(): void {
+    const minEv = this.diagnosticCounters.eventsPerIntervalMin === Infinity ? 0 : this.diagnosticCounters.eventsPerIntervalMin;
+    const avgEv = this.diagnosticCounters.intervalsWithNonzeroEvents > 0
+      ? Number((this.diagnosticCounters.rawEventsReceivedWhileLocked / this.diagnosticCounters.intervalsWithNonzeroEvents).toFixed(2))
+      : 0;
+
+    console.log('=== RAW MOUSE DIAGNOSTIC SUMMARY ===');
+    console.log(JSON.stringify({
+      raw_canvas_events: {
+        received_while_playing: this.diagnosticCounters.rawEventsReceivedWhilePlaying,
+        received_while_locked: this.diagnosticCounters.rawEventsReceivedWhileLocked,
+        with_nonzero_delta: this.diagnosticCounters.rawEventsWithNonzeroDelta,
+        sum_abs_x: this.diagnosticCounters.sumRawAbsMovementX,
+        sum_abs_y: this.diagnosticCounters.sumRawAbsMovementY,
+        rejected_by_guard: this.diagnosticCounters.rawEventsRejectedByGuard,
+      },
+      phaser_pointer_events: {
+        received_while_playing: this.diagnosticCounters.phaserEventsReceivedWhilePlaying,
+        received_while_locked: this.diagnosticCounters.phaserEventsReceivedWhileLocked,
+        with_nonzero_delta: this.diagnosticCounters.phaserEventsWithNonzeroDelta,
+        sum_abs_x: this.diagnosticCounters.sumPhaserAbsMovementX,
+        sum_abs_y: this.diagnosticCounters.sumPhaserAbsMovementY,
+      },
+      document_events: {
+        received_while_playing: this.diagnosticCounters.documentEventsReceivedWhilePlaying,
+        received_while_locked: this.diagnosticCounters.documentEventsReceivedWhileLocked,
+        target_canvas: this.diagnosticCounters.documentEventsTargetCanvas,
+        target_other: this.diagnosticCounters.documentEventsTargetOther,
+      },
+      sample_intervals: {
+        total: this.diagnosticCounters.sampleIntervalsTotal,
+        skipped_by_guard: this.diagnosticCounters.sampleIntervalsSkippedGuard,
+        samples_nonzero_delta: this.diagnosticCounters.samplesWithNonzeroDelta,
+        samples_zero_delta: this.diagnosticCounters.samplesWithZeroDelta,
+        intervals_with_zero_events: this.diagnosticCounters.intervalsWithZeroEvents,
+        intervals_with_nonzero_events: this.diagnosticCounters.intervalsWithNonzeroEvents,
+        events_per_interval_min: minEv,
+        events_per_interval_max: this.diagnosticCounters.eventsPerIntervalMax,
+        events_per_interval_avg: avgEv,
+      },
+    }, null, 2));
+  }
+
+  /**
+   * Start trajectory sampling for the current round.
+   * Sets up a ~60Hz interval timer that captures aim position and accumulated mouse deltas.
+   */
+  private startTrajectoryCollection(): void {
+    // Clear any leftover state from a previous round
+    this.pendingTrajectorySamples = [];
+    this.accumulatedMovementX = 0;
+    this.accumulatedMovementY = 0;
+    this.trajectorySegmentStartTime = new Date().toISOString();
+    this.trajectorySamplingActive = true;
+    this.resetDiagnosticCounters();
+
+    // Attach a direct DOM mousemove listener on the canvas to capture every raw
+    // movement delta. Phaser's pointermove callback only exposes the LAST DOM
+    // event's movementX/Y per frame, losing intermediate deltas when multiple
+    // native mousemove events fire between frames. This listener accumulates
+    // every delta so the trajectory samples reflect true mouse movement.
+    this.removeRawMouseListener();
+    this.boundRawMouseHandler = (event: MouseEvent) => {
+      const isPlaying = this.roundState === 'playing';
+      const isLocked = this.pointerLocked;
+      if (isPlaying) {
+        this.diagnosticCounters.rawEventsReceivedWhilePlaying++;
+      }
+      if (isLocked) {
+        this.diagnosticCounters.rawEventsReceivedWhileLocked++;
+      }
+
+      const mx = event.movementX || (event as unknown as { mozMovementX?: number }).mozMovementX || (event as unknown as { webkitMovementX?: number }).webkitMovementX || 0;
+      const my = event.movementY || (event as unknown as { mozMovementY?: number }).mozMovementY || (event as unknown as { webkitMovementY?: number }).webkitMovementY || 0;
+
+      if (mx !== 0 || my !== 0) {
+        this.diagnosticCounters.rawEventsWithNonzeroDelta++;
+      }
+
+      // Check guards individually
+      if (!this.trajectorySamplingActive) {
+        this.diagnosticCounters.rawEventsRejectedByGuard.samplingInactive++;
+        return;
+      }
+      if (!isPlaying) {
+        this.diagnosticCounters.rawEventsRejectedByGuard.notPlaying++;
+        return;
+      }
+      if (!isLocked) {
+        this.diagnosticCounters.rawEventsRejectedByGuard.notLocked++;
+        return;
+      }
+
+      this.accumulatedMovementX += mx;
+      this.accumulatedMovementY += my;
+      this.diagnosticCounters.sumRawAbsMovementX += Math.abs(mx);
+      this.diagnosticCounters.sumRawAbsMovementY += Math.abs(my);
+      this.diagnosticCounters.eventsInCurrentInterval++;
+    };
+    if (this.game?.canvas) {
+      this.game.canvas.addEventListener('mousemove', this.boundRawMouseHandler);
+    }
+
+    // Attach document-level listener to check event targeting during pointer lock
+    this.boundDocumentMouseHandler = (event: MouseEvent) => {
+      if (this.roundState === 'playing') {
+        this.diagnosticCounters.documentEventsReceivedWhilePlaying++;
+      }
+      if (this.pointerLocked) {
+        this.diagnosticCounters.documentEventsReceivedWhileLocked++;
+      }
+      if (event.target === this.game?.canvas) {
+        this.diagnosticCounters.documentEventsTargetCanvas++;
+      } else {
+        this.diagnosticCounters.documentEventsTargetOther++;
+      }
+    };
+    document.addEventListener('mousemove', this.boundDocumentMouseHandler);
+
+    // Sample at ~60Hz (16ms interval)
+    this.trajectorySamplingTimer = setInterval(() => {
+      this.captureTrajectorySnapshot();
+    }, 16);
+  }
+
+  /**
+   * Stop trajectory sampling, finalize any trailing segment, and clean up the timer.
+   */
+  private stopTrajectoryCollection(): void {
+    this.trajectorySamplingActive = false;
+
+    // Clear the sampling interval timer
+    if (this.trajectorySamplingTimer !== null) {
+      clearInterval(this.trajectorySamplingTimer);
+      this.trajectorySamplingTimer = null;
+    }
+
+    // Remove the direct DOM mousemove listener
+    this.removeRawMouseListener();
+
+    // Finalize any remaining samples as an unassigned trailing segment
+    if (this.pendingTrajectorySamples.length > 0) {
+      this.finalizeTrajectorySegment(null, null, new Date().toISOString());
+    }
+
+    // Reset accumulated deltas
+    this.accumulatedMovementX = 0;
+    this.accumulatedMovementY = 0;
+  }
+
+  /**
+   * Remove the direct DOM mousemove listener if it exists.
+   */
+  private removeRawMouseListener(): void {
+    if (this.boundRawMouseHandler && this.game?.canvas) {
+      this.game.canvas.removeEventListener('mousemove', this.boundRawMouseHandler);
+      this.boundRawMouseHandler = null;
+    }
+    if (this.boundDocumentMouseHandler) {
+      document.removeEventListener('mousemove', this.boundDocumentMouseHandler);
+      this.boundDocumentMouseHandler = null;
+    }
+  }
+
+  /**
+   * Capture a single trajectory snapshot at the current aim position.
+   * Only captures when sampling is active, the round is playing, and pointer lock is held.
+   */
+  private captureTrajectorySnapshot(): void {
+    this.diagnosticCounters.sampleIntervalsTotal++;
+
+    // Track raw events received in this sample interval
+    const evCount = this.diagnosticCounters.eventsInCurrentInterval;
+    this.diagnosticCounters.eventsInCurrentInterval = 0;
+    if (evCount === 0) {
+      this.diagnosticCounters.intervalsWithZeroEvents++;
+    } else {
+      this.diagnosticCounters.intervalsWithNonzeroEvents++;
+      if (evCount < this.diagnosticCounters.eventsPerIntervalMin) {
+        this.diagnosticCounters.eventsPerIntervalMin = evCount;
+      }
+      if (evCount > this.diagnosticCounters.eventsPerIntervalMax) {
+        this.diagnosticCounters.eventsPerIntervalMax = evCount;
+      }
+    }
+
+    if (!this.trajectorySamplingActive || this.roundState !== 'playing' || !this.pointerLocked) {
+      this.diagnosticCounters.sampleIntervalsSkippedGuard++;
+      // Reset accumulated deltas when not capturing to avoid artificial spikes on reacquire
+      this.accumulatedMovementX = 0;
+      this.accumulatedMovementY = 0;
+      return;
+    }
+
+    const centerX = this.scale.width / 2;
+    const centerY = this.scale.height / 2;
+
+    // Logical world aim position — same coordinate system as checkHit()
+    const worldX = centerX + this.aimOffsetX;
+    const worldY = centerY + this.aimOffsetY;
+
+    const sample: TrajectorySample = {
+      timestamp: new Date().toISOString(),
+      x: worldX,
+      y: worldY,
+      movement_x: this.accumulatedMovementX,
+      movement_y: this.accumulatedMovementY,
+    };
+
+    if (sample.movement_x !== 0 || sample.movement_y !== 0) {
+      this.diagnosticCounters.samplesWithNonzeroDelta++;
+    } else {
+      this.diagnosticCounters.samplesWithZeroDelta++;
+    }
+
+    this.pendingTrajectorySamples.push(sample);
+
+    // Reset accumulated deltas after consuming them into the sample
+    this.accumulatedMovementX = 0;
+    this.accumulatedMovementY = 0;
+  }
+
+  /**
+   * Finalize the current trajectory segment with the given associations.
+   * Consumes all pending samples into a TrajectorySegment and records it via the telemetry collector.
+   * Starts a fresh segment for subsequent samples.
+   *
+   * @param shotId - Shot ID to associate with this segment, or null for trailing segments
+   * @param targetId - Target ID actually hit, or null for misses/unassigned
+   * @param endTime - ISO timestamp marking the end of this segment
+   */
+  private finalizeTrajectorySegment(
+    shotId: string | null,
+    targetId: string | null,
+    endTime: string
+  ): void {
+    const samples = this.pendingTrajectorySamples;
+    const startTime = this.trajectorySegmentStartTime;
+    const startMs = new Date(startTime).getTime();
+    const endMs = new Date(endTime).getTime();
+
+    const segment: TrajectorySegment = {
+      trajectory_id: generateTrajectoryId(),
+      round_id: this.roundId,
+      shot_id: shotId,
+      target_id: targetId,
+      start_time: startTime,
+      end_time: endTime,
+      duration: endMs - startMs,
+      samples: [...samples],
+    };
+
+    telemetryCollector.recordTrajectorySegment(segment);
+
+    // Start fresh for the next segment
+    this.pendingTrajectorySamples = [];
+    this.trajectorySegmentStartTime = endTime;
   }
 }

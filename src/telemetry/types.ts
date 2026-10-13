@@ -64,13 +64,40 @@ export interface ShotTelemetry {
 }
 
 /**
- * Trajectory point type for mouse movement tracking.
- * Reserved for future telemetry milestones.
+ * A single raw mouse trajectory sample capturing aim position and movement deltas.
  */
-export interface TrajectoryPoint {
+export interface TrajectorySample {
+  /** ISO 8601 timestamp of the sample */
   timestamp: string;
+  /** Logical/world aim position X (consistent with hit detection coordinates) */
   x: number;
+  /** Logical/world aim position Y (consistent with hit detection coordinates) */
   y: number;
-  target_id?: string;
-  shot_id?: string;
+  /** Raw relative horizontal mouse movement delta accumulated since last sample */
+  movement_x: number;
+  /** Raw relative vertical mouse movement delta accumulated since last sample */
+  movement_y: number;
+}
+
+/**
+ * A trajectory segment containing ordered raw samples between two shots,
+ * or from round start to first shot, or from last shot to round end.
+ */
+export interface TrajectorySegment {
+  /** Unique trajectory segment identifier */
+  trajectory_id: string;
+  /** Round this segment belongs to */
+  round_id: string;
+  /** Shot ID this segment is associated with, or null for trailing/unassigned segments */
+  shot_id: string | null;
+  /** Target ID actually hit by the associated shot, or null for misses/unassigned */
+  target_id: string | null;
+  /** ISO 8601 timestamp when this segment started */
+  start_time: string;
+  /** ISO 8601 timestamp when this segment ended */
+  end_time: string;
+  /** Duration of the segment in milliseconds */
+  duration: number;
+  /** Ordered array of raw trajectory samples */
+  samples: TrajectorySample[];
 }

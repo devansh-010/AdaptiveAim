@@ -4,7 +4,7 @@ import type {
   RoundTelemetry,
   TargetTelemetry,
   ShotTelemetry,
-  TrajectoryPoint,
+  TrajectorySegment,
 } from './types';
 import { generatePlayerId, generateSessionId } from './ids';
 
@@ -18,7 +18,7 @@ export class TelemetryCollector {
   private currentRound: RoundTelemetry | null = null;
   private targetEvents: TargetTelemetry[] = [];
   private shotEvents: ShotTelemetry[] = [];
-  private trajectoryPoints: TrajectoryPoint[] = [];
+  private trajectorySegments: TrajectorySegment[] = [];
 
   constructor(playerId?: string) {
     const id = playerId || generatePlayerId();
@@ -48,7 +48,7 @@ export class TelemetryCollector {
   public startRound(roundId: string, mode: string = 'six_shot', difficulty: string = 'fixed'): void {
     this.targetEvents = [];
     this.shotEvents = [];
-    this.trajectoryPoints = [];
+    this.trajectorySegments = [];
 
     this.currentRound = {
       round_id: roundId,
@@ -110,8 +110,11 @@ export class TelemetryCollector {
     }
   }
 
-  public recordTrajectoryPoint(point: TrajectoryPoint): void {
-    this.trajectoryPoints.push(point);
+  /**
+   * Record a finalized trajectory segment for the current round.
+   */
+  public recordTrajectorySegment(segment: TrajectorySegment): void {
+    this.trajectorySegments.push(segment);
   }
 
   /**
@@ -169,21 +172,115 @@ export class TelemetryCollector {
 
     const completedRound = { ...this.currentRound };
 
-    // Development structured telemetry output
+    // ── Compact round summary ──
     console.log('=== SIX SHOT TELEMETRY ===');
-    console.log(
-      JSON.stringify(
-        {
-          player_id: this.activePlayer.player_id,
-          session_id: this.activeSession.session_id,
-          round: completedRound,
-          targets: this.targetEvents,
-          shots: this.shotEvents,
-        },
-        null,
-        2
-      )
+    console.log(JSON.stringify({
+      round_id: completedRound.round_id,
+      mode: completedRound.mode,
+      duration: completedRound.duration,
+      shots_fired: completedRound.shots_fired,
+      hits: completedRound.hits,
+      misses: completedRound.misses,
+      accuracy: completedRound.accuracy,
+      targets_spawned: completedRound.targets_spawned,
+      average_reaction_time: completedRound.average_reaction_time,
+      average_precision: completedRound.average_precision,
+    }, null, 2));
+
+    // ── Trajectory diagnostic summary ──
+    const totalSamples = this.trajectorySegments.reduce(
+      (acc, seg) => acc + seg.samples.length, 0
     );
+
+    const segmentDigests = this.trajectorySegments.map((seg) => {
+      const first = seg.samples.length > 0 ? seg.samples[0] : null;
+      const last = seg.samples.length > 1 ? seg.samples[seg.samples.length - 1] : first;
+      const nonzeroCount = seg.samples.filter((s) => s.movement_x !== 0 || s.movement_y !== 0).length;
+      return {
+        trajectory_id: seg.trajectory_id,
+        round_id: seg.round_id,
+        shot_id: seg.shot_id,
+        target_id: seg.target_id,
+        sample_count: seg.samples.length,
+        nonzero_sample_count: nonzeroCount,
+        start_time: seg.start_time,
+        end_time: seg.end_time,
+        duration: seg.duration,
+        first_sample: first,
+        last_sample: last,
+      };
+    });
+
+    // Compute movement delta statistics across all samples
+    let nonzeroMovementSamples = 0;
+    let zeroMovementSamples = 0;
+    let sumAbsMovementX = 0;
+    let sumAbsMovementY = 0;
+    let maxAbsMovementX = 0;
+    let maxAbsMovementY = 0;
+    let firstNonzeroSample: { segment_index: number; sample_index: number; sample: typeof segmentDigests[0]['first_sample'] } | null = null;
+
+    for (let si = 0; si < this.trajectorySegments.length; si++) {
+      const seg = this.trajectorySegments[si];
+      for (let ji = 0; ji < seg.samples.length; ji++) {
+        const s = seg.samples[ji];
+        const absX = Math.abs(s.movement_x);
+        const absY = Math.abs(s.movement_y);
+        sumAbsMovementX += absX;
+        sumAbsMovementY += absY;
+        if (absX > maxAbsMovementX) maxAbsMovementX = absX;
+        if (absY > maxAbsMovementY) maxAbsMovementY = absY;
+        if (s.movement_x !== 0 || s.movement_y !== 0) {
+          nonzeroMovementSamples++;
+          if (!firstNonzeroSample) {
+            firstNonzeroSample = { segment_index: si, sample_index: ji, sample: s };
+          }
+        } else {
+          zeroMovementSamples++;
+        }
+      }
+    }
+
+    console.log('=== TRAJECTORY DIAGNOSTIC ===');
+    console.log(JSON.stringify({
+      trajectory_segments_count: this.trajectorySegments.length,
+      total_samples: totalSamples,
+      movement_stats: {
+        nonzero_movement_samples: nonzeroMovementSamples,
+        zero_movement_samples: zeroMovementSamples,
+        sum_abs_movement_x: Number(sumAbsMovementX.toFixed(2)),
+        sum_abs_movement_y: Number(sumAbsMovementY.toFixed(2)),
+        max_abs_movement_x: Number(maxAbsMovementX.toFixed(2)),
+        max_abs_movement_y: Number(maxAbsMovementY.toFixed(2)),
+        first_nonzero_sample: firstNonzeroSample,
+      },
+      segments: segmentDigests,
+    }, null, 2));
+
+    // ── Association validation summary ──
+    const shotCount = this.shotEvents.length;
+    const segmentsWithShot = this.trajectorySegments.filter((s) => s.shot_id !== null);
+    const segmentsWithoutShot = this.trajectorySegments.filter((s) => s.shot_id === null);
+    const hitSegments = this.trajectorySegments.filter((s) => s.target_id !== null);
+    const missSegments = segmentsWithShot.filter((s) => s.target_id === null);
+
+    // Detect duplicate shot_id associations
+    const shotIdCounts = new Map<string, number>();
+    for (const seg of segmentsWithShot) {
+      const count = shotIdCounts.get(seg.shot_id!) ?? 0;
+      shotIdCounts.set(seg.shot_id!, count + 1);
+    }
+    const hasDuplicateShotIds = Array.from(shotIdCounts.values()).some((c) => c > 1);
+
+    console.log('=== ASSOCIATION VALIDATION ===');
+    console.log(JSON.stringify({
+      shot_records: shotCount,
+      segments_with_shot_id: segmentsWithShot.length,
+      segments_with_null_shot_id: segmentsWithoutShot.length,
+      hit_associated_segments: hitSegments.length,
+      miss_associated_segments: missSegments.length,
+      duplicate_shot_id_in_segments: hasDuplicateShotIds,
+    }, null, 2));
 
     return completedRound;
   }
@@ -196,8 +293,8 @@ export class TelemetryCollector {
     return [...this.shotEvents];
   }
 
-  public getRecordedTrajectory(): TrajectoryPoint[] {
-    return [...this.trajectoryPoints];
+  public getRecordedTrajectorySegments(): TrajectorySegment[] {
+    return [...this.trajectorySegments];
   }
 
   public endSession(): void {
