@@ -64,42 +64,6 @@ export class SixShotScene extends Phaser.Scene {
   private accumulatedMovementX: number = 0;
   private accumulatedMovementY: number = 0;
   private boundRawMouseHandler: ((event: MouseEvent) => void) | null = null;
-  private boundDocumentMouseHandler: ((event: MouseEvent) => void) | null = null;
-
-  // Aggregate diagnostic instrumentation counters
-  private diagnosticCounters = {
-    rawEventsReceivedWhilePlaying: 0,
-    rawEventsReceivedWhileLocked: 0,
-    rawEventsWithNonzeroDelta: 0,
-    rawEventsRejectedByGuard: {
-      samplingInactive: 0,
-      notPlaying: 0,
-      notLocked: 0,
-    },
-    sumRawAbsMovementX: 0,
-    sumRawAbsMovementY: 0,
-
-    phaserEventsReceivedWhilePlaying: 0,
-    phaserEventsReceivedWhileLocked: 0,
-    phaserEventsWithNonzeroDelta: 0,
-    sumPhaserAbsMovementX: 0,
-    sumPhaserAbsMovementY: 0,
-
-    documentEventsReceivedWhilePlaying: 0,
-    documentEventsReceivedWhileLocked: 0,
-    documentEventsTargetCanvas: 0,
-    documentEventsTargetOther: 0,
-
-    sampleIntervalsTotal: 0,
-    sampleIntervalsSkippedGuard: 0,
-    samplesWithNonzeroDelta: 0,
-    samplesWithZeroDelta: 0,
-    intervalsWithZeroEvents: 0,
-    intervalsWithNonzeroEvents: 0,
-    eventsInCurrentInterval: 0,
-    eventsPerIntervalMin: Infinity,
-    eventsPerIntervalMax: 0,
-  };
 
   public getLastShotResult(): string {
     return this.lastShotResult;
@@ -233,26 +197,17 @@ export class SixShotScene extends Phaser.Scene {
    * Handle relative mouse movement when pointer is locked during gameplay.
    */
   private handlePointerMove(pointer: Phaser.Input.Pointer): void {
-    if (this.roundState === 'playing') {
-      this.diagnosticCounters.phaserEventsReceivedWhilePlaying++;
-      if (this.pointerLocked) {
-        this.diagnosticCounters.phaserEventsReceivedWhileLocked++;
-        const movementX = pointer.movementX || 0;
-        const movementY = pointer.movementY || 0;
-        if (movementX !== 0 || movementY !== 0) {
-          this.diagnosticCounters.phaserEventsWithNonzeroDelta++;
-          this.diagnosticCounters.sumPhaserAbsMovementX += Math.abs(movementX);
-          this.diagnosticCounters.sumPhaserAbsMovementY += Math.abs(movementY);
-        }
+    if (this.roundState === 'playing' && this.pointerLocked) {
+      const movementX = pointer.movementX || 0;
+      const movementY = pointer.movementY || 0;
 
-        this.aimOffsetX += movementX * SIX_SHOT_AIM_SENSITIVITY;
-        this.aimOffsetY += movementY * SIX_SHOT_AIM_SENSITIVITY;
+      this.aimOffsetX += movementX * SIX_SHOT_AIM_SENSITIVITY;
+      this.aimOffsetY += movementY * SIX_SHOT_AIM_SENSITIVITY;
 
-        // Clamp aim offset to prevent targets from being lost indefinitely outside viewport
-        const maxOffset = Math.max(this.scale.width, this.scale.height) * 0.8;
-        this.aimOffsetX = Phaser.Math.Clamp(this.aimOffsetX, -maxOffset, maxOffset);
-        this.aimOffsetY = Phaser.Math.Clamp(this.aimOffsetY, -maxOffset, maxOffset);
-      }
+      // Clamp aim offset to prevent targets from being lost indefinitely outside viewport
+      const maxOffset = Math.max(this.scale.width, this.scale.height) * 0.8;
+      this.aimOffsetX = Phaser.Math.Clamp(this.aimOffsetX, -maxOffset, maxOffset);
+      this.aimOffsetY = Phaser.Math.Clamp(this.aimOffsetY, -maxOffset, maxOffset);
     }
   }
 
@@ -275,7 +230,7 @@ export class SixShotScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       document.removeEventListener('pointerlockchange', updateLockStatus);
       document.removeEventListener('mozpointerlockchange', updateLockStatus);
-      this.removeRawMouseListener();
+      this.stopTrajectoryCollection();
       this.releasePointerLock();
     });
   }
@@ -445,9 +400,6 @@ export class SixShotScene extends Phaser.Scene {
     this.stopTrajectoryCollection();
 
     this.releasePointerLock();
-
-    // Log compact raw mouse diagnostic summary
-    this.logRawMouseDiagnosticSummary();
 
     // Finalize telemetry recording for current round
     telemetryCollector.endRound();
@@ -1002,89 +954,6 @@ export class SixShotScene extends Phaser.Scene {
    * Start trajectory sampling for the current round.
    * Sets up a ~60Hz interval timer that captures aim position and accumulated mouse deltas.
    */
-  private resetDiagnosticCounters(): void {
-    this.diagnosticCounters = {
-      rawEventsReceivedWhilePlaying: 0,
-      rawEventsReceivedWhileLocked: 0,
-      rawEventsWithNonzeroDelta: 0,
-      rawEventsRejectedByGuard: {
-        samplingInactive: 0,
-        notPlaying: 0,
-        notLocked: 0,
-      },
-      sumRawAbsMovementX: 0,
-      sumRawAbsMovementY: 0,
-
-      phaserEventsReceivedWhilePlaying: 0,
-      phaserEventsReceivedWhileLocked: 0,
-      phaserEventsWithNonzeroDelta: 0,
-      sumPhaserAbsMovementX: 0,
-      sumPhaserAbsMovementY: 0,
-
-      documentEventsReceivedWhilePlaying: 0,
-      documentEventsReceivedWhileLocked: 0,
-      documentEventsTargetCanvas: 0,
-      documentEventsTargetOther: 0,
-
-      sampleIntervalsTotal: 0,
-      sampleIntervalsSkippedGuard: 0,
-      samplesWithNonzeroDelta: 0,
-      samplesWithZeroDelta: 0,
-      intervalsWithZeroEvents: 0,
-      intervalsWithNonzeroEvents: 0,
-      eventsInCurrentInterval: 0,
-      eventsPerIntervalMin: Infinity,
-      eventsPerIntervalMax: 0,
-    };
-  }
-
-  private logRawMouseDiagnosticSummary(): void {
-    const minEv = this.diagnosticCounters.eventsPerIntervalMin === Infinity ? 0 : this.diagnosticCounters.eventsPerIntervalMin;
-    const avgEv = this.diagnosticCounters.intervalsWithNonzeroEvents > 0
-      ? Number((this.diagnosticCounters.rawEventsReceivedWhileLocked / this.diagnosticCounters.intervalsWithNonzeroEvents).toFixed(2))
-      : 0;
-
-    console.log('=== RAW MOUSE DIAGNOSTIC SUMMARY ===');
-    console.log(JSON.stringify({
-      raw_canvas_events: {
-        received_while_playing: this.diagnosticCounters.rawEventsReceivedWhilePlaying,
-        received_while_locked: this.diagnosticCounters.rawEventsReceivedWhileLocked,
-        with_nonzero_delta: this.diagnosticCounters.rawEventsWithNonzeroDelta,
-        sum_abs_x: this.diagnosticCounters.sumRawAbsMovementX,
-        sum_abs_y: this.diagnosticCounters.sumRawAbsMovementY,
-        rejected_by_guard: this.diagnosticCounters.rawEventsRejectedByGuard,
-      },
-      phaser_pointer_events: {
-        received_while_playing: this.diagnosticCounters.phaserEventsReceivedWhilePlaying,
-        received_while_locked: this.diagnosticCounters.phaserEventsReceivedWhileLocked,
-        with_nonzero_delta: this.diagnosticCounters.phaserEventsWithNonzeroDelta,
-        sum_abs_x: this.diagnosticCounters.sumPhaserAbsMovementX,
-        sum_abs_y: this.diagnosticCounters.sumPhaserAbsMovementY,
-      },
-      document_events: {
-        received_while_playing: this.diagnosticCounters.documentEventsReceivedWhilePlaying,
-        received_while_locked: this.diagnosticCounters.documentEventsReceivedWhileLocked,
-        target_canvas: this.diagnosticCounters.documentEventsTargetCanvas,
-        target_other: this.diagnosticCounters.documentEventsTargetOther,
-      },
-      sample_intervals: {
-        total: this.diagnosticCounters.sampleIntervalsTotal,
-        skipped_by_guard: this.diagnosticCounters.sampleIntervalsSkippedGuard,
-        samples_nonzero_delta: this.diagnosticCounters.samplesWithNonzeroDelta,
-        samples_zero_delta: this.diagnosticCounters.samplesWithZeroDelta,
-        intervals_with_zero_events: this.diagnosticCounters.intervalsWithZeroEvents,
-        intervals_with_nonzero_events: this.diagnosticCounters.intervalsWithNonzeroEvents,
-        events_per_interval_min: minEv,
-        events_per_interval_max: this.diagnosticCounters.eventsPerIntervalMax,
-        events_per_interval_avg: avgEv,
-      },
-    }, null, 2));
-  }
-
-  /**
-   * Start trajectory sampling for the current round.
-   * Sets up a ~60Hz interval timer that captures aim position and accumulated mouse deltas.
-   */
   private startTrajectoryCollection(): void {
     // Clear any leftover state from a previous round
     this.pendingTrajectorySamples = [];
@@ -1092,7 +961,6 @@ export class SixShotScene extends Phaser.Scene {
     this.accumulatedMovementY = 0;
     this.trajectorySegmentStartTime = new Date().toISOString();
     this.trajectorySamplingActive = true;
-    this.resetDiagnosticCounters();
 
     // Attach a direct DOM mousemove listener on the canvas to capture every raw
     // movement delta. Phaser's pointermove callback only exposes the LAST DOM
@@ -1101,61 +969,19 @@ export class SixShotScene extends Phaser.Scene {
     // every delta so the trajectory samples reflect true mouse movement.
     this.removeRawMouseListener();
     this.boundRawMouseHandler = (event: MouseEvent) => {
-      const isPlaying = this.roundState === 'playing';
-      const isLocked = this.pointerLocked;
-      if (isPlaying) {
-        this.diagnosticCounters.rawEventsReceivedWhilePlaying++;
-      }
-      if (isLocked) {
-        this.diagnosticCounters.rawEventsReceivedWhileLocked++;
+      if (!this.trajectorySamplingActive || this.roundState !== 'playing' || !this.pointerLocked) {
+        return;
       }
 
       const mx = event.movementX || (event as unknown as { mozMovementX?: number }).mozMovementX || (event as unknown as { webkitMovementX?: number }).webkitMovementX || 0;
       const my = event.movementY || (event as unknown as { mozMovementY?: number }).mozMovementY || (event as unknown as { webkitMovementY?: number }).webkitMovementY || 0;
 
-      if (mx !== 0 || my !== 0) {
-        this.diagnosticCounters.rawEventsWithNonzeroDelta++;
-      }
-
-      // Check guards individually
-      if (!this.trajectorySamplingActive) {
-        this.diagnosticCounters.rawEventsRejectedByGuard.samplingInactive++;
-        return;
-      }
-      if (!isPlaying) {
-        this.diagnosticCounters.rawEventsRejectedByGuard.notPlaying++;
-        return;
-      }
-      if (!isLocked) {
-        this.diagnosticCounters.rawEventsRejectedByGuard.notLocked++;
-        return;
-      }
-
       this.accumulatedMovementX += mx;
       this.accumulatedMovementY += my;
-      this.diagnosticCounters.sumRawAbsMovementX += Math.abs(mx);
-      this.diagnosticCounters.sumRawAbsMovementY += Math.abs(my);
-      this.diagnosticCounters.eventsInCurrentInterval++;
     };
     if (this.game?.canvas) {
       this.game.canvas.addEventListener('mousemove', this.boundRawMouseHandler);
     }
-
-    // Attach document-level listener to check event targeting during pointer lock
-    this.boundDocumentMouseHandler = (event: MouseEvent) => {
-      if (this.roundState === 'playing') {
-        this.diagnosticCounters.documentEventsReceivedWhilePlaying++;
-      }
-      if (this.pointerLocked) {
-        this.diagnosticCounters.documentEventsReceivedWhileLocked++;
-      }
-      if (event.target === this.game?.canvas) {
-        this.diagnosticCounters.documentEventsTargetCanvas++;
-      } else {
-        this.diagnosticCounters.documentEventsTargetOther++;
-      }
-    };
-    document.addEventListener('mousemove', this.boundDocumentMouseHandler);
 
     // Sample at ~60Hz (16ms interval)
     this.trajectorySamplingTimer = setInterval(() => {
@@ -1196,10 +1022,6 @@ export class SixShotScene extends Phaser.Scene {
       this.game.canvas.removeEventListener('mousemove', this.boundRawMouseHandler);
       this.boundRawMouseHandler = null;
     }
-    if (this.boundDocumentMouseHandler) {
-      document.removeEventListener('mousemove', this.boundDocumentMouseHandler);
-      this.boundDocumentMouseHandler = null;
-    }
   }
 
   /**
@@ -1207,25 +1029,7 @@ export class SixShotScene extends Phaser.Scene {
    * Only captures when sampling is active, the round is playing, and pointer lock is held.
    */
   private captureTrajectorySnapshot(): void {
-    this.diagnosticCounters.sampleIntervalsTotal++;
-
-    // Track raw events received in this sample interval
-    const evCount = this.diagnosticCounters.eventsInCurrentInterval;
-    this.diagnosticCounters.eventsInCurrentInterval = 0;
-    if (evCount === 0) {
-      this.diagnosticCounters.intervalsWithZeroEvents++;
-    } else {
-      this.diagnosticCounters.intervalsWithNonzeroEvents++;
-      if (evCount < this.diagnosticCounters.eventsPerIntervalMin) {
-        this.diagnosticCounters.eventsPerIntervalMin = evCount;
-      }
-      if (evCount > this.diagnosticCounters.eventsPerIntervalMax) {
-        this.diagnosticCounters.eventsPerIntervalMax = evCount;
-      }
-    }
-
     if (!this.trajectorySamplingActive || this.roundState !== 'playing' || !this.pointerLocked) {
-      this.diagnosticCounters.sampleIntervalsSkippedGuard++;
       // Reset accumulated deltas when not capturing to avoid artificial spikes on reacquire
       this.accumulatedMovementX = 0;
       this.accumulatedMovementY = 0;
@@ -1246,12 +1050,6 @@ export class SixShotScene extends Phaser.Scene {
       movement_x: this.accumulatedMovementX,
       movement_y: this.accumulatedMovementY,
     };
-
-    if (sample.movement_x !== 0 || sample.movement_y !== 0) {
-      this.diagnosticCounters.samplesWithNonzeroDelta++;
-    } else {
-      this.diagnosticCounters.samplesWithZeroDelta++;
-    }
 
     this.pendingTrajectorySamples.push(sample);
 
