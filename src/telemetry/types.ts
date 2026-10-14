@@ -100,4 +100,51 @@ export interface TrajectorySegment {
   duration: number;
   /** Ordered array of raw trajectory samples */
   samples: TrajectorySample[];
+  /** Optional derived trajectory features calculated from raw samples */
+  derived_metrics?: TrajectoryDerivedMetrics;
+}
+
+/**
+ * Derived metrics calculated from a raw mouse trajectory segment.
+ */
+export interface TrajectoryDerivedMetrics {
+  /**
+   * Sum of Euclidean distances between consecutive valid aim positions in logical pixels (px).
+   * Returns 0 for trajectories with fewer than 2 valid samples.
+   */
+  path_distance: number;
+  /**
+   * Straight-line Euclidean distance between the first and last valid aim positions in logical pixels (px).
+   * Returns 0 for trajectories with fewer than 2 valid samples.
+   */
+  direct_distance: number;
+  /**
+   * Ratio of direct distance to total path distance: direct_distance / path_distance, in range [0, 1].
+   * Null if path_distance is 0 (e.g., stationary or single-sample trajectory).
+   */
+  path_efficiency: number | null;
+  /**
+   * Average velocity in logical pixels per second (px/s) over all eligible positive-elapsed intervals.
+   * Calculated as total path distance across eligible intervals divided by total eligible elapsed seconds.
+   * Null if eligible elapsed time is 0 or no eligible intervals exist.
+   */
+  average_velocity: number | null;
+  /**
+   * Highest instantaneous interval velocity observed in logical pixels per second (px/s).
+   * Null if no eligible intervals exist.
+   */
+  max_velocity: number | null;
+  /**
+   * Count of meaningful direction changes (heading turns exceeding configured angular threshold)
+   * after filtering sub-threshold spatial noise and stationary samples.
+   */
+  direction_changes: number;
+  /**
+   * Total count of valid samples utilized in calculation.
+   */
+  valid_sample_count: number;
+  /**
+   * Total eligible elapsed time in seconds across positive intervals used for velocity calculations.
+   */
+  eligible_duration_seconds: number;
 }

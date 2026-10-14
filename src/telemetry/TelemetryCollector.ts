@@ -7,6 +7,7 @@ import type {
   TrajectorySegment,
 } from './types';
 import { generatePlayerId, generateSessionId } from './ids';
+import { calculateTrajectoryFeatures } from './trajectoryFeatures.ts';
 
 /**
  * TelemetryCollector centralizes performance metrics collection and round data aggregation.
@@ -112,8 +113,12 @@ export class TelemetryCollector {
 
   /**
    * Record a finalized trajectory segment for the current round.
+   * Computes derived kinematic and geometric features if not already calculated.
    */
   public recordTrajectorySegment(segment: TrajectorySegment): void {
+    if (!segment.derived_metrics) {
+      segment.derived_metrics = calculateTrajectoryFeatures(segment);
+    }
     this.trajectorySegments.push(segment);
   }
 
@@ -206,6 +211,14 @@ export class TelemetryCollector {
         start_time: seg.start_time,
         end_time: seg.end_time,
         duration: seg.duration,
+        derived: seg.derived_metrics ? {
+          path_distance: Number(seg.derived_metrics.path_distance.toFixed(1)),
+          direct_distance: Number(seg.derived_metrics.direct_distance.toFixed(1)),
+          path_efficiency: seg.derived_metrics.path_efficiency !== null ? Number(seg.derived_metrics.path_efficiency.toFixed(3)) : null,
+          avg_velocity: seg.derived_metrics.average_velocity !== null ? Number(seg.derived_metrics.average_velocity.toFixed(1)) : null,
+          max_velocity: seg.derived_metrics.max_velocity !== null ? Number(seg.derived_metrics.max_velocity.toFixed(1)) : null,
+          direction_changes: seg.derived_metrics.direction_changes,
+        } : null,
         first_sample: first,
         last_sample: last,
       };
@@ -241,6 +254,33 @@ export class TelemetryCollector {
       }
     }
 
+    // Aggregate derived trajectory metrics across all segments
+    const segmentsWithEfficiency = this.trajectorySegments.filter(
+      (s) => s.derived_metrics?.path_efficiency !== null && s.derived_metrics?.path_efficiency !== undefined
+    );
+    const meanEfficiency = segmentsWithEfficiency.length > 0
+      ? Number(
+          (
+            segmentsWithEfficiency.reduce((acc, s) => acc + (s.derived_metrics!.path_efficiency ?? 0), 0) /
+            segmentsWithEfficiency.length
+          ).toFixed(3)
+        )
+      : null;
+
+    const totalPathDistance = Number(
+      this.trajectorySegments.reduce((acc, s) => acc + (s.derived_metrics?.path_distance ?? 0), 0).toFixed(1)
+    );
+
+    const velocities = this.trajectorySegments
+      .map((s) => s.derived_metrics?.max_velocity)
+      .filter((v): v is number => v !== null && v !== undefined);
+    const peakVelocity = velocities.length > 0 ? Math.max(...velocities) : null;
+
+    const totalDirectionChanges = this.trajectorySegments.reduce(
+      (acc, s) => acc + (s.derived_metrics?.direction_changes ?? 0),
+      0
+    );
+
     console.log('=== TRAJECTORY DIAGNOSTIC ===');
     console.log(JSON.stringify({
       trajectory_segments_count: this.trajectorySegments.length,
@@ -253,6 +293,12 @@ export class TelemetryCollector {
         max_abs_movement_x: Number(maxAbsMovementX.toFixed(2)),
         max_abs_movement_y: Number(maxAbsMovementY.toFixed(2)),
         first_nonzero_sample: firstNonzeroSample,
+      },
+      derived_stats: {
+        total_path_distance: totalPathDistance,
+        mean_path_efficiency: meanEfficiency,
+        peak_velocity: peakVelocity !== null ? Number(peakVelocity.toFixed(1)) : null,
+        total_direction_changes: totalDirectionChanges,
       },
       segments: segmentDigests,
     }, null, 2));
