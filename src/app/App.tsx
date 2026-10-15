@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { GameCanvas } from '../components/GameCanvas';
+import { GameCanvas } from '../components/GameCanvas.tsx';
 import './App.css';
 
-export type GameMode = 'home' | 'six_shot';
+export type GameMode = 'home' | 'six_shot' | 'moving_targets';
 
 export const App: React.FC = () => {
   const [currentMode, setCurrentMode] = useState<GameMode>('home');
@@ -16,7 +16,11 @@ export const App: React.FC = () => {
   };
 
   if (currentMode === 'six_shot') {
-    return <GameCanvas onExit={handleExitGame} />;
+    return <GameCanvas mode="six_shot" onExit={handleExitGame} />;
+  }
+
+  if (currentMode === 'moving_targets') {
+    return <GameCanvas mode="moving_targets" onExit={handleExitGame} />;
   }
 
   return (
@@ -43,14 +47,20 @@ export const App: React.FC = () => {
           <button className="play-btn">PLAY</button>
         </div>
 
-        {/* Card 2: Moving Targets (Coming Soon) */}
-        <div className="mode-card mode-card-disabled">
-          <div className="card-badge badge-disabled">COMING SOON</div>
+        {/* Card 2: Moving Targets (Active) */}
+        <div
+          className="mode-card mode-card-active"
+          onClick={() => handleSelectMode('moving_targets')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && handleSelectMode('moving_targets')}
+        >
+          <div className="card-badge badge-active">ACTIVE MODE</div>
           <h2 className="card-title">MOVING TARGETS</h2>
           <p className="card-description">
             Track and hit continuously moving targets.
           </p>
-          <div className="disabled-status">COMING SOON</div>
+          <button className="play-btn">PLAY</button>
         </div>
 
         {/* Card 3: Thirty Shot (Coming Soon) */}

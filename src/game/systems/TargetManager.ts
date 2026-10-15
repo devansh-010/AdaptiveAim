@@ -1,7 +1,7 @@
-import { Target } from '../entities/Target';
-import { generateTargetId } from '../../telemetry/ids';
-import { GAME_CONFIG } from '../config/gameConfig';
-import { telemetryCollector } from '../../telemetry/TelemetryCollector';
+import { Target } from '../entities/Target.ts';
+import { generateTargetId } from '../../telemetry/ids.ts';
+import { GAME_CONFIG } from '../config/gameConfig.ts';
+import { telemetryCollector } from '../../telemetry/TelemetryCollector.ts';
 
 export interface SpawnArea {
   minX: number;
@@ -12,10 +12,10 @@ export interface SpawnArea {
 
 /**
  * TargetManager handles target placement, active target pool maintenance,
- * collision bounds validation, and replacement target generation.
+ * collision bounds validation, moving target updates, and replacement target generation.
  *
  * It owns the logic for generating valid random positions and preventing overlap.
- * SixShotScene delegates all spawning to this class.
+ * Both SixShotScene and MovingTargetsScene delegate target management to this class.
  */
 export class TargetManager {
   private activeTargets: Map<string, Target> = new Map();
@@ -24,6 +24,8 @@ export class TargetManager {
   private targetRadius: number;
   private minSeparation: number;
   private retryLimit: number;
+  private movementEnabled: boolean;
+  private movementSpeed: number;
 
   constructor(
     canvasWidth: number,
@@ -33,11 +35,15 @@ export class TargetManager {
     spawnMargin: number = GAME_CONFIG.sixShot.spawnMargin,
     minSeparation: number = GAME_CONFIG.sixShot.minTargetSeparation,
     retryLimit: number = GAME_CONFIG.sixShot.spawnRetryLimit,
+    movementEnabled: boolean = false,
+    movementSpeed: number = 0
   ) {
     this.maxActiveTargets = maxTargets;
     this.targetRadius = targetRadius;
     this.minSeparation = minSeparation;
     this.retryLimit = retryLimit;
+    this.movementEnabled = movementEnabled;
+    this.movementSpeed = movementSpeed;
 
     // Compute valid spawn area from canvas dimensions, margin, and target radius.
     this.updateSpawnArea(canvasWidth, canvasHeight, spawnMargin);
@@ -58,6 +64,17 @@ export class TargetManager {
       minY: effectiveMargin,
       maxY: canvasHeight - effectiveMargin,
     };
+  }
+
+  /**
+   * Advance all active moving targets by delta seconds and bounce off spawn bounds.
+   */
+  public update(deltaSeconds: number): void {
+    if (!this.movementEnabled || deltaSeconds <= 0) return;
+
+    for (const target of this.activeTargets.values()) {
+      target.update(deltaSeconds, this.spawnArea);
+    }
   }
 
   /**
@@ -91,12 +108,25 @@ export class TargetManager {
     const position = this.generateValidSpawnPosition();
     const targetId = generateTargetId();
 
+    let dirX = 0;
+    let dirY = 0;
+    if (this.movementEnabled) {
+      const angle = Math.random() * Math.PI * 2;
+      dirX = Math.cos(angle);
+      dirY = Math.sin(angle);
+    }
+
     const target = new Target(
       targetId,
       roundId,
       position.x,
       position.y,
       this.targetRadius,
+      new Date().toISOString(),
+      this.movementEnabled,
+      this.movementSpeed,
+      dirX,
+      dirY
     );
 
     this.activeTargets.set(targetId, target);
@@ -105,7 +135,7 @@ export class TargetManager {
   }
 
   /**
-   * Spawn initial batch of 6 targets for a round.
+   * Spawn initial batch of targets for a round.
    */
   public spawnInitialTargets(roundId: string): Target[] {
     const spawned: Target[] = [];
@@ -172,6 +202,18 @@ export class TargetManager {
 
   public getMaxActiveTargets(): number {
     return this.maxActiveTargets;
+  }
+
+  public isMovementEnabled(): boolean {
+    return this.movementEnabled;
+  }
+
+  public getMovementSpeed(): number {
+    return this.movementSpeed;
+  }
+
+  public getSpawnArea(): SpawnArea {
+    return { ...this.spawnArea };
   }
 
   public clearAll(): void {

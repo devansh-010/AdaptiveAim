@@ -1,10 +1,10 @@
 import Phaser from 'phaser';
-import { GAME_CONFIG, SIX_SHOT_ROUND_DURATION, SIX_SHOT_AIM_SENSITIVITY } from '../config/gameConfig';
-import { TargetManager } from '../systems/TargetManager';
-import { generateRoundId, generateShotId, generateTrajectoryId } from '../../telemetry/ids';
-import { telemetryCollector } from '../../telemetry/TelemetryCollector';
+import { GAME_CONFIG, SIX_SHOT_ROUND_DURATION, SIX_SHOT_AIM_SENSITIVITY } from '../config/gameConfig.ts';
+import { TargetManager } from '../systems/TargetManager.ts';
+import { generateRoundId, generateShotId, generateTrajectoryId } from '../../telemetry/ids.ts';
+import { telemetryCollector } from '../../telemetry/TelemetryCollector.ts';
 import type { ShotTelemetry, TrajectorySample, TrajectorySegment } from '../../telemetry/types';
-import type { Target } from '../entities/Target';
+import type { Target } from '../entities/Target.ts';
 
 /**
  * Texture key for the circular target graphic.
@@ -32,8 +32,12 @@ export type RoundState = 'start' | 'playing' | 'timeOver' | 'results';
  *   including Reaction Time and Precision metrics per shot.
  */
 export class SixShotScene extends Phaser.Scene {
-  private targetManager!: TargetManager;
-  private roundId!: string;
+  protected targetManager!: TargetManager;
+  protected roundId!: string;
+  protected modeKey: string = 'six_shot';
+  protected modeTitle: string = 'SIX SHOT';
+  protected modeDifficulty: string = 'fixed';
+  protected roundDuration: number = SIX_SHOT_ROUND_DURATION;
 
   /**
    * Map of targetId → Phaser Image game object for rendering.
@@ -41,8 +45,8 @@ export class SixShotScene extends Phaser.Scene {
   private targetSprites: Map<string, Phaser.GameObjects.Image> = new Map();
 
   // Round flow state
-  private roundState: RoundState = 'start';
-  private remainingTime: number = SIX_SHOT_ROUND_DURATION;
+  protected roundState: RoundState = 'start';
+  protected remainingTime: number = SIX_SHOT_ROUND_DURATION;
 
   // Pointer lock & FPS aiming system state
   private pointerLocked: boolean = false;
@@ -93,8 +97,8 @@ export class SixShotScene extends Phaser.Scene {
   private weaponImage!: Phaser.GameObjects.Image;
   private lockNoticeText!: Phaser.GameObjects.Text;
 
-  constructor() {
-    super({ key: 'SixShotScene' });
+  constructor(config: Phaser.Types.Scenes.SettingsConfig = { key: 'SixShotScene' }) {
+    super(config);
   }
 
   preload(): void {
@@ -117,11 +121,11 @@ export class SixShotScene extends Phaser.Scene {
     this.generateTargetTexture();
 
     // Initialize TargetManager with current viewport dimensions
-    this.targetManager = new TargetManager(width, height);
+    this.initTargetManager(width, height);
 
     // Set initial round state to start
     this.roundState = 'start';
-    this.remainingTime = SIX_SHOT_ROUND_DURATION;
+    this.remainingTime = this.roundDuration;
     this.shotsFired = 0;
     this.hits = 0;
     this.misses = 0;
@@ -162,7 +166,23 @@ export class SixShotScene extends Phaser.Scene {
     );
   }
 
+  /**
+   * Factory hook to instantiate TargetManager. Overridden in MovingTargetsScene.
+   */
+  protected initTargetManager(width: number, height: number): void {
+    this.targetManager = new TargetManager(width, height);
+  }
+
+  /**
+   * Lifecycle hook invoked prior to rendering targets in update().
+   * Overridden in MovingTargetsScene to advance target positions.
+   */
+  protected onPreUpdate(_delta: number): void {
+    // No-op for stationary targets in Six Shot
+  }
+
   override update(_time: number, delta: number): void {
+    this.onPreUpdate(delta);
     // Continuously update rendered target positions relative to aim offset
     this.updateTargetPositions();
 
@@ -364,7 +384,7 @@ export class SixShotScene extends Phaser.Scene {
     this.aimOffsetY = 0;
 
     // 5. Initialize Telemetry collector for this round
-    telemetryCollector.startRound(this.roundId, 'six_shot', 'fixed');
+    telemetryCollector.startRound(this.roundId, this.modeKey, this.modeDifficulty);
 
     // 6. Spawn initial 6 targets (records target spawn events in telemetry)
     const targets = this.targetManager.spawnInitialTargets(this.roundId);
@@ -539,7 +559,7 @@ export class SixShotScene extends Phaser.Scene {
         target_x: hitTarget.x,
         target_y: hitTarget.y,
         target_size: hitTarget.size,
-        target_speed: 0,
+        target_speed: hitTarget.movementSpeed,
         distance_to_target: precision,
         reaction_time: reactionTime,
         precision,

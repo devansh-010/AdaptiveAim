@@ -1,18 +1,31 @@
 import type { TargetTelemetry } from '../../telemetry/types';
 
+export interface TargetBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
 /**
  * Clean domain abstraction representing a single Target in the aim trainer.
- * Handles target state data and target lifecycle without movement logic.
+ * Handles target state data, movement, boundary reflection, and target lifecycle.
  */
 export class Target {
   public readonly targetId: string;
   public readonly roundId: string;
-  public readonly x: number;
-  public readonly y: number;
+  public x: number;
+  public y: number;
+  public readonly spawnX: number;
+  public readonly spawnY: number;
   public readonly size: number;
   public readonly spawnTime: string;
   public destroyTime?: string;
   public isDestroyed: boolean = false;
+  public readonly movementEnabled: boolean;
+  public readonly movementSpeed: number;
+  public directionX: number;
+  public directionY: number;
 
   constructor(
     targetId: string,
@@ -20,14 +33,53 @@ export class Target {
     x: number,
     y: number,
     size: number,
-    spawnTime: string = new Date().toISOString()
+    spawnTime: string = new Date().toISOString(),
+    movementEnabled: boolean = false,
+    movementSpeed: number = 0,
+    directionX: number = 0,
+    directionY: number = 0
   ) {
     this.targetId = targetId;
     this.roundId = roundId;
     this.x = x;
     this.y = y;
+    this.spawnX = x;
+    this.spawnY = y;
     this.size = size;
     this.spawnTime = spawnTime;
+    this.movementEnabled = movementEnabled;
+    this.movementSpeed = movementSpeed;
+    this.directionX = directionX;
+    this.directionY = directionY;
+  }
+
+  /**
+   * Advance target position based on direction and speed, and bounce off boundaries.
+   */
+  public update(deltaSeconds: number, bounds: TargetBounds): void {
+    if (!this.movementEnabled || this.isDestroyed || deltaSeconds <= 0) {
+      return;
+    }
+
+    this.x += this.directionX * this.movementSpeed * deltaSeconds;
+    this.y += this.directionY * this.movementSpeed * deltaSeconds;
+
+    // Boundary reflections (accounting for target center within valid bounds)
+    if (this.x <= bounds.minX) {
+      this.x = bounds.minX;
+      this.directionX = Math.abs(this.directionX);
+    } else if (this.x >= bounds.maxX) {
+      this.x = bounds.maxX;
+      this.directionX = -Math.abs(this.directionX);
+    }
+
+    if (this.y <= bounds.minY) {
+      this.y = bounds.minY;
+      this.directionY = Math.abs(this.directionY);
+    } else if (this.y >= bounds.maxY) {
+      this.y = bounds.maxY;
+      this.directionY = -Math.abs(this.directionY);
+    }
   }
 
   /**
@@ -68,13 +120,13 @@ export class Target {
       round_id: this.roundId,
       spawn_time: this.spawnTime,
       destroy_time: this.destroyTime,
-      spawn_x: this.x,
-      spawn_y: this.y,
+      spawn_x: this.spawnX,
+      spawn_y: this.spawnY,
       target_size: this.size,
-      movement_enabled: false,
-      movement_speed: 0,
-      direction_x: 0,
-      direction_y: 0,
+      movement_enabled: this.movementEnabled,
+      movement_speed: this.movementSpeed,
+      direction_x: Number(this.directionX.toFixed(3)),
+      direction_y: Number(this.directionY.toFixed(3)),
       lifetime,
     };
   }

@@ -11,6 +11,16 @@ export interface SixShotConfig {
   spawnRetryLimit: number;
 }
 
+export interface MovingTargetsConfig {
+  targetCount: number;
+  durationSeconds: number;
+  targetRadius: number;
+  movementSpeed: number;
+  spawnMargin: number;
+  minTargetSeparation: number;
+  spawnRetryLimit: number;
+}
+
 export interface GameCanvasConfig {
   width: number;
   height: number;
@@ -20,6 +30,7 @@ export interface GameCanvasConfig {
 export interface GameConfiguration {
   canvas: GameCanvasConfig;
   sixShot: SixShotConfig;
+  movingTargets: MovingTargetsConfig;
   defaultTargetColor: number;
   defaultTargetHoverColor: number;
 }
@@ -29,6 +40,13 @@ export const SIX_SHOT_DURATION = 30; // seconds
 export const SIX_SHOT_ROUND_DURATION = SIX_SHOT_DURATION; // seconds
 export const SIX_SHOT_TARGET_SIZE = 22; // radius in pixels
 export const SIX_SHOT_AIM_SENSITIVITY = 1.0;
+
+export const MOVING_TARGETS_TARGET_COUNT = 4;
+export const MOVING_TARGETS_DURATION = 30; // seconds
+export const MOVING_TARGETS_ROUND_DURATION = MOVING_TARGETS_DURATION; // seconds
+export const MOVING_TARGETS_TARGET_SIZE = 22; // radius in pixels
+export const MOVING_TARGETS_SPEED = 160; // pixels per second
+export const MOVING_TARGETS_AIM_SENSITIVITY = 1.0;
 
 /**
  * Margin from canvas edges where targets will not spawn.
@@ -57,6 +75,15 @@ export const GAME_CONFIG: GameConfiguration = {
     targetCount: SIX_SHOT_TARGET_COUNT,
     durationSeconds: SIX_SHOT_DURATION,
     targetRadius: SIX_SHOT_TARGET_SIZE,
+    spawnMargin: TARGET_SPAWN_MARGIN,
+    minTargetSeparation: MIN_TARGET_SEPARATION,
+    spawnRetryLimit: SPAWN_RETRY_LIMIT,
+  },
+  movingTargets: {
+    targetCount: MOVING_TARGETS_TARGET_COUNT,
+    durationSeconds: MOVING_TARGETS_DURATION,
+    targetRadius: MOVING_TARGETS_TARGET_SIZE,
+    movementSpeed: MOVING_TARGETS_SPEED,
     spawnMargin: TARGET_SPAWN_MARGIN,
     minTargetSeparation: MIN_TARGET_SEPARATION,
     spawnRetryLimit: SPAWN_RETRY_LIMIT,
