@@ -6,7 +6,7 @@ import type {
   ShotTelemetry,
   TrajectorySegment,
 } from './types';
-import { generatePlayerId, generateSessionId } from './ids';
+import { generatePlayerId, generateSessionId } from './ids.ts';
 import { calculateTrajectoryFeatures } from './trajectoryFeatures.ts';
 
 /**
