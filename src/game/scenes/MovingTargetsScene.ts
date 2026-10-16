@@ -1,6 +1,10 @@
 import { SixShotScene } from './SixShotScene.ts';
 import { TargetManager } from '../systems/TargetManager.ts';
-import { GAME_CONFIG, MOVING_TARGETS_ROUND_DURATION } from '../config/gameConfig.ts';
+import {
+  GAME_CONFIG,
+  MOVING_TARGETS_ROUND_DURATION,
+  DEFAULT_MAX_AIM_DISTANCE,
+} from '../config/gameConfig.ts';
 
 /**
  * MovingTargetsScene provides the Moving Targets FPS aim trainer mode.
@@ -13,6 +17,7 @@ export class MovingTargetsScene extends SixShotScene {
     super({ key: 'MovingTargetsScene' });
     this.modeKey = 'moving_targets';
     this.modeTitle = 'MOVING TARGETS';
+    this.modeSubtitle = 'Track and hit continuously moving targets.';
     this.modeDifficulty = 'moving';
     this.roundDuration = MOVING_TARGETS_ROUND_DURATION;
   }
@@ -30,7 +35,8 @@ export class MovingTargetsScene extends SixShotScene {
       GAME_CONFIG.movingTargets.minTargetSeparation,
       GAME_CONFIG.movingTargets.spawnRetryLimit,
       true, // movementEnabled
-      GAME_CONFIG.movingTargets.movementSpeed // 160 px/s
+      GAME_CONFIG.movingTargets.movementSpeed, // 160 px/s
+      GAME_CONFIG.movingTargets.maxAimDistance ?? DEFAULT_MAX_AIM_DISTANCE
     );
   }
 

@@ -64,20 +64,25 @@ export class Target {
     this.x += this.directionX * this.movementSpeed * deltaSeconds;
     this.y += this.directionY * this.movementSpeed * deltaSeconds;
 
+    const minX = Math.min(bounds.minX, bounds.maxX);
+    const maxX = Math.max(bounds.minX, bounds.maxX);
+    const minY = Math.min(bounds.minY, bounds.maxY);
+    const maxY = Math.max(bounds.minY, bounds.maxY);
+
     // Boundary reflections (accounting for target center within valid bounds)
-    if (this.x <= bounds.minX) {
-      this.x = bounds.minX;
+    if (this.x <= minX) {
+      this.x = minX;
       this.directionX = Math.abs(this.directionX);
-    } else if (this.x >= bounds.maxX) {
-      this.x = bounds.maxX;
+    } else if (this.x >= maxX) {
+      this.x = maxX;
       this.directionX = -Math.abs(this.directionX);
     }
 
-    if (this.y <= bounds.minY) {
-      this.y = bounds.minY;
+    if (this.y <= minY) {
+      this.y = minY;
       this.directionY = Math.abs(this.directionY);
-    } else if (this.y >= bounds.maxY) {
-      this.y = bounds.maxY;
+    } else if (this.y >= maxY) {
+      this.y = maxY;
       this.directionY = -Math.abs(this.directionY);
     }
   }

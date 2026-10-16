@@ -1,5 +1,10 @@
 import Phaser from 'phaser';
-import { GAME_CONFIG, SIX_SHOT_ROUND_DURATION, SIX_SHOT_AIM_SENSITIVITY } from '../config/gameConfig.ts';
+import {
+  GAME_CONFIG,
+  SIX_SHOT_ROUND_DURATION,
+  SIX_SHOT_AIM_SENSITIVITY,
+  DEFAULT_MAX_AIM_DISTANCE,
+} from '../config/gameConfig.ts';
 import { TargetManager } from '../systems/TargetManager.ts';
 import { generateRoundId, generateShotId, generateTrajectoryId } from '../../telemetry/ids.ts';
 import { telemetryCollector } from '../../telemetry/TelemetryCollector.ts';
@@ -36,29 +41,30 @@ export class SixShotScene extends Phaser.Scene {
   protected roundId!: string;
   protected modeKey: string = 'six_shot';
   protected modeTitle: string = 'SIX SHOT';
+  protected modeSubtitle: string = 'Hit the targets as accurately and quickly as you can.';
   protected modeDifficulty: string = 'fixed';
   protected roundDuration: number = SIX_SHOT_ROUND_DURATION;
 
   /**
    * Map of targetId → Phaser Image game object for rendering.
    */
-  private targetSprites: Map<string, Phaser.GameObjects.Image> = new Map();
+  protected targetSprites: Map<string, Phaser.GameObjects.Image> = new Map();
 
   // Round flow state
   protected roundState: RoundState = 'start';
   protected remainingTime: number = SIX_SHOT_ROUND_DURATION;
 
   // Pointer lock & FPS aiming system state
-  private pointerLocked: boolean = false;
-  private aimOffsetX: number = 0;
-  private aimOffsetY: number = 0;
+  protected pointerLocked: boolean = false;
+  protected aimOffsetX: number = 0;
+  protected aimOffsetY: number = 0;
 
   // Round statistics
-  private shotsFired: number = 0;
-  private hits: number = 0;
-  private misses: number = 0;
-  private lastShotResult: string = 'None';
-  private lastHitTargetId: string = 'None';
+  protected shotsFired: number = 0;
+  protected hits: number = 0;
+  protected misses: number = 0;
+  protected lastShotResult: string = 'None';
+  protected lastHitTargetId: string = 'None';
 
   // Trajectory sampling state
   private trajectorySamplingActive: boolean = false;
@@ -78,19 +84,19 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   // HUD elements
-  private hudContainer!: Phaser.GameObjects.Container;
-  private hudTimeText!: Phaser.GameObjects.Text;
-  private hudHitsText!: Phaser.GameObjects.Text;
-  private hudAccText!: Phaser.GameObjects.Text;
+  protected hudContainer!: Phaser.GameObjects.Container;
+  protected hudTimeText!: Phaser.GameObjects.Text;
+  protected hudHitsText!: Phaser.GameObjects.Text;
+  protected hudAccText!: Phaser.GameObjects.Text;
 
   // Navigation exit button
-  private exitButton!: Phaser.GameObjects.Text;
+  protected exitButton!: Phaser.GameObjects.Text;
 
   // UI Overlay containers & transition objects
-  private startContainer!: Phaser.GameObjects.Container;
-  private resultsContainer!: Phaser.GameObjects.Container;
-  private resultsStatsText!: Phaser.GameObjects.Text;
-  private timeOverText!: Phaser.GameObjects.Text;
+  protected startContainer!: Phaser.GameObjects.Container;
+  protected resultsContainer!: Phaser.GameObjects.Container;
+  protected resultsStatsText!: Phaser.GameObjects.Text;
+  protected timeOverText!: Phaser.GameObjects.Text;
 
   // FPS Aiming visual elements
   private crosshairContainer!: Phaser.GameObjects.Container;
@@ -170,7 +176,18 @@ export class SixShotScene extends Phaser.Scene {
    * Factory hook to instantiate TargetManager. Overridden in MovingTargetsScene.
    */
   protected initTargetManager(width: number, height: number): void {
-    this.targetManager = new TargetManager(width, height);
+    this.targetManager = new TargetManager(
+      width,
+      height,
+      GAME_CONFIG.sixShot.targetCount,
+      GAME_CONFIG.sixShot.targetRadius,
+      GAME_CONFIG.sixShot.spawnMargin,
+      GAME_CONFIG.sixShot.minTargetSeparation,
+      GAME_CONFIG.sixShot.spawnRetryLimit,
+      false,
+      0,
+      GAME_CONFIG.sixShot.maxAimDistance ?? DEFAULT_MAX_AIM_DISTANCE
+    );
   }
 
   /**
@@ -179,6 +196,18 @@ export class SixShotScene extends Phaser.Scene {
    */
   protected onPreUpdate(_delta: number): void {
     // No-op for stationary targets in Six Shot
+  }
+
+  /**
+   * Update round timing (countdown in Six Shot / Moving Targets; elapsed in Thirty Shot).
+   */
+  protected updateTimer(delta: number): void {
+    // delta is provided in milliseconds by Phaser; convert to seconds
+    this.remainingTime -= delta / 1000;
+
+    if (this.remainingTime <= 0) {
+      this.triggerTimeOver();
+    }
   }
 
   override update(_time: number, delta: number): void {
@@ -191,14 +220,8 @@ export class SixShotScene extends Phaser.Scene {
       return;
     }
 
-    // delta is provided in milliseconds by Phaser; convert to seconds
-    this.remainingTime -= delta / 1000;
-
-    if (this.remainingTime <= 0) {
-      this.triggerTimeOver();
-    } else {
-      this.updateHud();
-    }
+    this.updateTimer(delta);
+    this.updateHud();
   }
 
   /**
@@ -228,6 +251,10 @@ export class SixShotScene extends Phaser.Scene {
       const maxOffset = Math.max(this.scale.width, this.scale.height) * 0.8;
       this.aimOffsetX = Phaser.Math.Clamp(this.aimOffsetX, -maxOffset, maxOffset);
       this.aimOffsetY = Phaser.Math.Clamp(this.aimOffsetY, -maxOffset, maxOffset);
+
+      if (this.targetManager) {
+        this.targetManager.setAimOffset(this.aimOffsetX, this.aimOffsetY);
+      }
     }
   }
 
@@ -360,9 +387,27 @@ export class SixShotScene extends Phaser.Scene {
   }
 
   /**
-   * Start a new round: set state to playing, reset stats and aim offset, start telemetry round, and spawn initial 6 targets.
+   * Reset round statistics & aim offset. Overridden in ThirtyShotScene.
    */
-  private startRound(): void {
+  protected resetRoundState(): void {
+    this.roundState = 'playing';
+    this.remainingTime = this.roundDuration;
+    this.shotsFired = 0;
+    this.hits = 0;
+    this.misses = 0;
+    this.lastShotResult = 'None';
+    this.lastHitTargetId = 'None';
+    this.aimOffsetX = 0;
+    this.aimOffsetY = 0;
+    if (this.targetManager) {
+      this.targetManager.setAimOffset(0, 0);
+    }
+  }
+
+  /**
+   * Start a new round: set state to playing, reset stats and aim offset, start telemetry round, and spawn initial targets.
+   */
+  protected startRound(): void {
     // 1. Clear any existing targets
     this.clearTargets();
 
@@ -373,20 +418,12 @@ export class SixShotScene extends Phaser.Scene {
     this.roundId = generateRoundId();
 
     // 4. Reset round statistics & aim offset
-    this.roundState = 'playing';
-    this.remainingTime = SIX_SHOT_ROUND_DURATION;
-    this.shotsFired = 0;
-    this.hits = 0;
-    this.misses = 0;
-    this.lastShotResult = 'None';
-    this.lastHitTargetId = 'None';
-    this.aimOffsetX = 0;
-    this.aimOffsetY = 0;
+    this.resetRoundState();
 
     // 5. Initialize Telemetry collector for this round
     telemetryCollector.startRound(this.roundId, this.modeKey, this.modeDifficulty);
 
-    // 6. Spawn initial 6 targets (records target spawn events in telemetry)
+    // 6. Spawn initial targets (records target spawn events in telemetry)
     const targets = this.targetManager.spawnInitialTargets(this.roundId);
     for (const target of targets) {
       this.renderTarget(target);
@@ -406,13 +443,13 @@ export class SixShotScene extends Phaser.Scene {
     }
 
     this.updateHud();
-    console.log(`[SixShotScene] Round ${this.roundId} started with telemetry recording.`);
+    console.log(`[${this.constructor.name}] Round ${this.roundId} started with telemetry recording.`);
   }
 
   /**
-   * Trigger the animated TIME OVER transition state when 30s timer reaches zero.
+   * Conclude gameplay with animated transition banner ('TIME OVER' or 'ROUND COMPLETE').
    */
-  private triggerTimeOver(): void {
+  protected triggerRoundTransition(bannerText: string = 'TIME OVER', bannerColor: string = '#ff3366'): void {
     this.roundState = 'timeOver';
     this.remainingTime = 0;
 
@@ -434,15 +471,18 @@ export class SixShotScene extends Phaser.Scene {
     const centerY = this.scale.height / 2;
 
     if (!this.timeOverText) {
-      this.timeOverText = this.add.text(centerX, centerY, 'TIME OVER', {
+      this.timeOverText = this.add.text(centerX, centerY, bannerText, {
         fontFamily: 'Consolas, Monaco, "Courier New", monospace',
         fontSize: '52px',
-        color: '#ff3366',
+        color: bannerColor,
         stroke: '#ffffff',
         strokeThickness: 2,
         align: 'center',
       }).setOrigin(0.5, 0.5);
       this.timeOverText.setDepth(300);
+    } else {
+      this.timeOverText.setText(bannerText);
+      this.timeOverText.setColor(bannerColor);
     }
 
     this.timeOverText.setPosition(centerX, centerY);
@@ -475,13 +515,20 @@ export class SixShotScene extends Phaser.Scene {
       },
     });
 
-    console.log(`[SixShotScene] Round ${this.roundId} TIME OVER transition started.`);
+    console.log(`[${this.constructor.name}] Round ${this.roundId} transition '${bannerText}' started.`);
+  }
+
+  /**
+   * Trigger the animated TIME OVER transition state when timer reaches zero.
+   */
+  protected triggerTimeOver(): void {
+    this.triggerRoundTransition('TIME OVER', '#ff3366');
   }
 
   /**
    * Conclude active round: set state to results, release pointer lock, and show summary overlay.
    */
-  private endRound(): void {
+  protected endRound(): void {
     this.remainingTime = 0;
     this.roundState = 'results';
     this.releasePointerLock();
@@ -489,13 +536,13 @@ export class SixShotScene extends Phaser.Scene {
     this.updateResultsOverlay();
     this.resultsContainer.setVisible(true);
     this.updateHud();
-    console.log(`[SixShotScene] Round ${this.roundId} complete.`);
+    console.log(`[${this.constructor.name}] Round ${this.roundId} complete.`);
   }
 
   /**
    * Reset round statistics, recreate fresh targets, reset aim offset, and start new round.
    */
-  private restartRound(): void {
+  protected restartRound(): void {
     this.startRound();
   }
 
@@ -581,21 +628,8 @@ export class SixShotScene extends Phaser.Scene {
         hitGfx.destroy();
       });
 
-      // Destroy hit target's Phaser visual object
-      const sprite = this.targetSprites.get(hitTarget.targetId);
-      if (sprite) {
-        sprite.destroy();
-        this.targetSprites.delete(hitTarget.targetId);
-      }
-
-      // Destroy target domain entity in TargetManager (records destroy telemetry)
-      this.targetManager.destroyTarget(hitTarget.targetId, timestamp);
-
-      // Immediately spawn replacement target to maintain active count = 6 (records spawn telemetry)
-      const newTargets = this.targetManager.maintainTargetCount(this.roundId);
-      for (const newTarget of newTargets) {
-        this.renderTarget(newTarget);
-      }
+      // Handle target visual & entity destruction and replacement
+      this.onTargetHitCompleted(hitTarget, timestamp);
     } else {
       this.misses++;
       this.lastShotResult = 'MISS';
@@ -819,7 +853,32 @@ export class SixShotScene extends Phaser.Scene {
     this.updateHud();
   }
 
-  private updateHud(): void {
+  /**
+   * Remove a hit target entity and its visual sprite.
+   */
+  protected removeTarget(targetId: string, timestamp: string): void {
+    const sprite = this.targetSprites.get(targetId);
+    if (sprite) {
+      sprite.destroy();
+      this.targetSprites.delete(targetId);
+    }
+    this.targetManager.destroyTarget(targetId, timestamp);
+  }
+
+  /**
+   * Handle target destruction and replacement spawning after a hit.
+   * Overridden in ThirtyShotScene to check for 30 hits completion.
+   */
+  protected onTargetHitCompleted(hitTarget: Target, timestamp: string): void {
+    this.removeTarget(hitTarget.targetId, timestamp);
+
+    const newTargets = this.targetManager.maintainTargetCount(this.roundId);
+    for (const newTarget of newTargets) {
+      this.renderTarget(newTarget);
+    }
+  }
+
+  protected updateHud(): void {
     const accuracy = this.shotsFired > 0
       ? ((this.hits / this.shotsFired) * 100).toFixed(1)
       : '0.0';
@@ -838,13 +897,13 @@ export class SixShotScene extends Phaser.Scene {
     const panel = this.add.rectangle(0, 0, 480, 260, 0x121626, 0.95);
     panel.setStrokeStyle(2, 0x00e5ff, 0.8);
 
-    const title = this.add.text(0, -65, 'SIX SHOT', {
+    const title = this.add.text(0, -65, this.modeTitle, {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '36px',
       color: '#00e5ff',
     }).setOrigin(0.5, 0.5);
 
-    const subtitle = this.add.text(0, -20, 'Hit the targets as accurately and quickly as you can.', {
+    const subtitle = this.add.text(0, -20, this.modeSubtitle, {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '13px',
       color: '#88aacc',
@@ -909,7 +968,7 @@ export class SixShotScene extends Phaser.Scene {
     this.resultsContainer.setVisible(false);
   }
 
-  private updateResultsOverlay(): void {
+  protected updateResultsOverlay(): void {
     const completedRound = telemetryCollector.getCurrentRound();
     const accuracy = this.shotsFired > 0
       ? ((this.hits / this.shotsFired) * 100).toFixed(1)
@@ -957,7 +1016,7 @@ export class SixShotScene extends Phaser.Scene {
     graphics.destroy();
   }
 
-  private renderTarget(target: Target): void {
+  protected renderTarget(target: Target): void {
     const image = this.add.image(
       target.x - this.aimOffsetX,
       target.y - this.aimOffsetY,

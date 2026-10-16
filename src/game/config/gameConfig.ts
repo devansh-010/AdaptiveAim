@@ -9,6 +9,7 @@ export interface SixShotConfig {
   spawnMargin: number;
   minTargetSeparation: number;
   spawnRetryLimit: number;
+  maxAimDistance?: number;
 }
 
 export interface MovingTargetsConfig {
@@ -19,6 +20,17 @@ export interface MovingTargetsConfig {
   spawnMargin: number;
   minTargetSeparation: number;
   spawnRetryLimit: number;
+  maxAimDistance?: number;
+}
+
+export interface ThirtyShotConfig {
+  targetCount: number;
+  targetGoal: number;
+  targetRadius: number;
+  spawnMargin: number;
+  minTargetSeparation: number;
+  spawnRetryLimit: number;
+  maxAimDistance?: number;
 }
 
 export interface GameCanvasConfig {
@@ -31,6 +43,7 @@ export interface GameConfiguration {
   canvas: GameCanvasConfig;
   sixShot: SixShotConfig;
   movingTargets: MovingTargetsConfig;
+  thirtyShot: ThirtyShotConfig;
   defaultTargetColor: number;
   defaultTargetHoverColor: number;
 }
@@ -47,6 +60,16 @@ export const MOVING_TARGETS_ROUND_DURATION = MOVING_TARGETS_DURATION; // seconds
 export const MOVING_TARGETS_TARGET_SIZE = 22; // radius in pixels
 export const MOVING_TARGETS_SPEED = 160; // pixels per second
 export const MOVING_TARGETS_AIM_SENSITIVITY = 1.0;
+
+export const THIRTY_SHOT_TARGET_COUNT = 1;
+export const THIRTY_SHOT_TARGET_GOAL = 30; // targets to hit
+export const THIRTY_SHOT_TARGET_SIZE = 22; // radius in pixels
+export const THIRTY_SHOT_AIM_SENSITIVITY = 1.0;
+
+/**
+ * Maximum pixel distance from center crosshair for target spawning.
+ */
+export const DEFAULT_MAX_AIM_DISTANCE = 380;
 
 /**
  * Margin from canvas edges where targets will not spawn.
@@ -78,6 +101,7 @@ export const GAME_CONFIG: GameConfiguration = {
     spawnMargin: TARGET_SPAWN_MARGIN,
     minTargetSeparation: MIN_TARGET_SEPARATION,
     spawnRetryLimit: SPAWN_RETRY_LIMIT,
+    maxAimDistance: DEFAULT_MAX_AIM_DISTANCE,
   },
   movingTargets: {
     targetCount: MOVING_TARGETS_TARGET_COUNT,
@@ -87,6 +111,16 @@ export const GAME_CONFIG: GameConfiguration = {
     spawnMargin: TARGET_SPAWN_MARGIN,
     minTargetSeparation: MIN_TARGET_SEPARATION,
     spawnRetryLimit: SPAWN_RETRY_LIMIT,
+    maxAimDistance: DEFAULT_MAX_AIM_DISTANCE,
+  },
+  thirtyShot: {
+    targetCount: THIRTY_SHOT_TARGET_COUNT,
+    targetGoal: THIRTY_SHOT_TARGET_GOAL,
+    targetRadius: THIRTY_SHOT_TARGET_SIZE,
+    spawnMargin: TARGET_SPAWN_MARGIN,
+    minTargetSeparation: MIN_TARGET_SEPARATION,
+    spawnRetryLimit: SPAWN_RETRY_LIMIT,
+    maxAimDistance: DEFAULT_MAX_AIM_DISTANCE,
   },
   defaultTargetColor: 0x00e5ff,
   defaultTargetHoverColor: 0xff4081,

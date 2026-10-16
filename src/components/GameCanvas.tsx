@@ -2,10 +2,11 @@ import React, { useEffect, useRef } from 'react';
 import Phaser from 'phaser';
 import { SixShotScene } from '../game/scenes/SixShotScene.ts';
 import { MovingTargetsScene } from '../game/scenes/MovingTargetsScene.ts';
+import { ThirtyShotScene } from '../game/scenes/ThirtyShotScene.ts';
 import { GAME_CONFIG } from '../game/config/gameConfig.ts';
 
 interface GameCanvasProps {
-  mode?: 'six_shot' | 'moving_targets';
+  mode?: 'six_shot' | 'moving_targets' | 'thirty_shot';
   onExit?: () => void;
 }
 
@@ -21,7 +22,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ mode = 'six_shot', onExi
       return;
     }
 
-    const activeScene = mode === 'moving_targets' ? MovingTargetsScene : SixShotScene;
+    const activeScene =
+      mode === 'moving_targets'
+        ? MovingTargetsScene
+        : mode === 'thirty_shot'
+        ? ThirtyShotScene
+        : SixShotScene;
 
     const config: Phaser.Types.Core.GameConfig = {
       type: Phaser.AUTO,

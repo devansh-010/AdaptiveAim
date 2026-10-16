@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { GameCanvas } from '../components/GameCanvas.tsx';
 import './App.css';
 
-export type GameMode = 'home' | 'six_shot' | 'moving_targets';
+export type GameMode = 'home' | 'six_shot' | 'moving_targets' | 'thirty_shot';
 
 export const App: React.FC = () => {
   const [currentMode, setCurrentMode] = useState<GameMode>('home');
@@ -21,6 +21,10 @@ export const App: React.FC = () => {
 
   if (currentMode === 'moving_targets') {
     return <GameCanvas mode="moving_targets" onExit={handleExitGame} />;
+  }
+
+  if (currentMode === 'thirty_shot') {
+    return <GameCanvas mode="thirty_shot" onExit={handleExitGame} />;
   }
 
   return (
@@ -63,14 +67,20 @@ export const App: React.FC = () => {
           <button className="play-btn">PLAY</button>
         </div>
 
-        {/* Card 3: Thirty Shot (Coming Soon) */}
-        <div className="mode-card mode-card-disabled">
-          <div className="card-badge badge-disabled">COMING SOON</div>
+        {/* Card 3: Thirty Shot (Active) */}
+        <div
+          className="mode-card mode-card-active"
+          onClick={() => handleSelectMode('thirty_shot')}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && handleSelectMode('thirty_shot')}
+        >
+          <div className="card-badge badge-active">ACTIVE MODE</div>
           <h2 className="card-title">THIRTY SHOT</h2>
           <p className="card-description">
             Hit 30 targets as quickly and accurately as possible.
           </p>
-          <div className="disabled-status">COMING SOON</div>
+          <button className="play-btn">PLAY</button>
         </div>
       </main>
 
