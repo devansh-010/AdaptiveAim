@@ -6,10 +6,12 @@ import {
   DEFAULT_MAX_AIM_DISTANCE,
 } from '../config/gameConfig.ts';
 import { TargetManager } from '../systems/TargetManager.ts';
-import { generateRoundId, generateShotId, generateTrajectoryId } from '../../telemetry/ids.ts';
+import { generateRoundId, generateShotId } from '../../telemetry/ids.ts';
 import { telemetryCollector } from '../../telemetry/TelemetryCollector.ts';
-import type { ShotTelemetry, TrajectorySample, TrajectorySegment } from '../../telemetry/types';
 import type { Target } from '../entities/Target.ts';
+import type { ShotTelemetry } from '../../telemetry/types';
+import { EnvironmentRenderer } from '../rendering/EnvironmentRenderer.ts';
+import { TrajectorySampler } from '../systems/TrajectorySampler.ts';
 
 /**
  * Texture key for the circular target graphic.
@@ -46,6 +48,11 @@ export class SixShotScene extends Phaser.Scene {
   protected roundDuration: number = SIX_SHOT_ROUND_DURATION;
 
   /**
+   * Environment renderer for procedural checkerboard walls, floor, ceiling, and barrier.
+   */
+  protected environmentRenderer!: EnvironmentRenderer;
+
+  /**
    * Map of targetId → Phaser Image game object for rendering.
    */
   protected targetSprites: Map<string, Phaser.GameObjects.Image> = new Map();
@@ -66,14 +73,24 @@ export class SixShotScene extends Phaser.Scene {
   protected lastShotResult: string = 'None';
   protected lastHitTargetId: string = 'None';
 
-  // Trajectory sampling state
+  // Trajectory sampling system
+  protected trajectorySampler: TrajectorySampler = new TrajectorySampler();
   private trajectorySamplingActive: boolean = false;
   private trajectorySamplingTimer: ReturnType<typeof setInterval> | null = null;
-  private pendingTrajectorySamples: TrajectorySample[] = [];
-  private trajectorySegmentStartTime: string = '';
-  private accumulatedMovementX: number = 0;
-  private accumulatedMovementY: number = 0;
   private boundRawMouseHandler: ((event: MouseEvent) => void) | null = null;
+  private readonly onPointerDown = (pointer: Phaser.Input.Pointer) => {
+    this.handlePointerDown(pointer.worldX, pointer.worldY);
+  };
+  private readonly onPointerMove = (pointer: Phaser.Input.Pointer) => this.handlePointerMove(pointer);
+  private readonly onResize = (gameSize: Phaser.Structs.Size) => {
+    this.handleResize(gameSize.width, gameSize.height);
+  };
+  private readonly onPointerLockChange = () => {
+    this.pointerLocked = document.pointerLockElement === this.game.canvas;
+    if (!this.pointerLocked) this.trajectorySampler.clearAccumulatedMovement();
+    this.lockNoticeText?.setVisible(this.roundState === 'playing' && !this.pointerLocked);
+  };
+  private readonly onSceneCleanup = () => this.cleanupScene();
 
   public getLastShotResult(): string {
     return this.lastShotResult;
@@ -123,6 +140,10 @@ export class SixShotScene extends Phaser.Scene {
 
     this.cameras.main.setBackgroundColor(bgHex);
 
+    // Initialize Environment Renderer (checkerboard back wall, floor, ceiling, and barrier)
+    this.environmentRenderer = new EnvironmentRenderer(this);
+    this.environmentRenderer.create(width, height);
+
     // Generate circular target texture
     this.generateTargetTexture();
 
@@ -153,19 +174,13 @@ export class SixShotScene extends Phaser.Scene {
     this.setupPointerLockListeners();
 
     // Register pointer down listener for gesture lock and shooting
-    this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      this.handlePointerDown(pointer.worldX, pointer.worldY);
-    });
+    this.input.on('pointerdown', this.onPointerDown);
 
     // Register pointer move listener for FPS relative mouse aiming
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      this.handlePointerMove(pointer);
-    });
+    this.input.on('pointermove', this.onPointerMove);
 
     // Listen to window / canvas resize events
-    this.scale.on('resize', (gameSize: Phaser.Structs.Size) => {
-      this.handleResize(gameSize.width, gameSize.height);
-    });
+    this.scale.on('resize', this.onResize);
 
     console.log(
       `[SixShotScene] Initialized in START state (${width}x${height}). Waiting for TAP TO START.`
@@ -215,6 +230,16 @@ export class SixShotScene extends Phaser.Scene {
     // Continuously update rendered target positions relative to aim offset
     this.updateTargetPositions();
 
+    // Update environment parallax and tile positions based on aim offset
+    if (this.environmentRenderer) {
+      this.environmentRenderer.update(
+        this.aimOffsetX,
+        this.aimOffsetY,
+        this.scale.width,
+        this.scale.height
+      );
+    }
+
     // Timer only ticks during active PLAYING state
     if (this.roundState !== 'playing') {
       return;
@@ -262,24 +287,32 @@ export class SixShotScene extends Phaser.Scene {
    * Listen to browser pointer lock change events.
    */
   private setupPointerLockListeners(): void {
-    const updateLockStatus = () => {
-      const isLocked = document.pointerLockElement === this.game.canvas;
-      this.pointerLocked = isLocked;
+    document.addEventListener('pointerlockchange', this.onPointerLockChange);
+    document.addEventListener('mozpointerlockchange', this.onPointerLockChange);
+    // React destroys the whole game on exit; Phaser 4 emits DESTROY directly
+    // on that path, without first emitting SHUTDOWN.
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.onSceneCleanup);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.onSceneCleanup);
+  }
 
-      if (this.lockNoticeText) {
-        this.lockNoticeText.setVisible(this.roundState === 'playing' && !isLocked);
-      }
-    };
-
-    document.addEventListener('pointerlockchange', updateLockStatus);
-    document.addEventListener('mozpointerlockchange', updateLockStatus);
-
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
-      document.removeEventListener('pointerlockchange', updateLockStatus);
-      document.removeEventListener('mozpointerlockchange', updateLockStatus);
-      this.stopTrajectoryCollection();
-      this.releasePointerLock();
-    });
+  private cleanupScene(): void {
+    this.events.off(Phaser.Scenes.Events.SHUTDOWN, this.onSceneCleanup);
+    this.events.off(Phaser.Scenes.Events.DESTROY, this.onSceneCleanup);
+    document.removeEventListener('pointerlockchange', this.onPointerLockChange);
+    document.removeEventListener('mozpointerlockchange', this.onPointerLockChange);
+    this.scale.off('resize', this.onResize);
+    this.input.off('pointerdown', this.onPointerDown);
+    this.input.off('pointermove', this.onPointerMove);
+    this.stopTrajectoryCollection();
+    const round = telemetryCollector.getCurrentRound();
+    if (this.roundState === 'playing' && round?.round_id === this.roundId && !round.end_time) {
+      telemetryCollector.endRound();
+    }
+    this.trajectorySampler.reset();
+    this.clearTargets();
+    this.environmentRenderer?.destroy();
+    this.releasePointerLock();
+    this.roundState = 'start';
   }
 
   /**
@@ -300,25 +333,34 @@ export class SixShotScene extends Phaser.Scene {
    */
   private releasePointerLock(): void {
     try {
-      if (document.pointerLockElement) {
+      if (document.pointerLockElement === this.game.canvas) {
         document.exitPointerLock();
-      } else if (this.input && this.input.mouse && this.input.mouse.locked) {
+      } else if (!document.pointerLockElement && this.input?.mouse?.locked) {
         this.input.mouse.releasePointerLock();
       }
     } catch (e) {
       console.warn('[SixShotScene] Pointer lock release error:', e);
     }
+    this.pointerLocked = false;
   }
 
   /**
    * Handle dynamic viewport resize to keep HUD, overlays, exit button, weapon, and crosshair aligned.
    */
   private handleResize(width: number, height: number): void {
+    const maxOffset = Math.max(width, height) * 0.8;
+    this.aimOffsetX = Phaser.Math.Clamp(this.aimOffsetX, -maxOffset, maxOffset);
+    this.aimOffsetY = Phaser.Math.Clamp(this.aimOffsetY, -maxOffset, maxOffset);
+    if (this.environmentRenderer) {
+      this.environmentRenderer.resize(width, height);
+    }
     if (this.targetManager) {
       this.targetManager.updateSpawnArea(width, height);
+      this.targetManager.setAimOffset(this.aimOffsetX, this.aimOffsetY);
+      this.updateTargetPositions();
     }
     if (this.hudContainer) {
-      this.hudContainer.setPosition(width / 2, 36);
+      this.hudContainer.setPosition(width / 2, 30);
     }
     if (this.startContainer) {
       this.startContainer.setPosition(width / 2, height / 2);
@@ -572,10 +614,13 @@ export class SixShotScene extends Phaser.Scene {
     const shotId = generateShotId();
     const timestamp = new Date().toISOString();
 
-    // Finalize the pre-shot trajectory segment with this shot's ID
-    this.finalizeTrajectorySegment(
+    // Finalize the pre-shot trajectory segment with this shot's ID, capturing
+    // pending movement and current logical aim position at the shot boundary
+    this.trajectorySampler.handleShotBoundary(
       shotId,
       hitTarget ? hitTarget.targetId : null,
+      worldX,
+      worldY,
       timestamp
     );
 
@@ -617,12 +662,13 @@ export class SixShotScene extends Phaser.Scene {
       const hitScreenX = hitTarget.x - this.aimOffsetX;
       const hitScreenY = hitTarget.y - this.aimOffsetY;
 
-      // Visual feedback: glowing ring expansion at target position
+      // Visual feedback: bright neon-green glowing ring expansion at target position
       const hitGfx = this.add.graphics();
-      hitGfx.fillStyle(0x00ffff, 0.5);
+      hitGfx.fillStyle(0x00ff66, 0.5);
       hitGfx.fillCircle(hitScreenX, hitScreenY, hitTarget.size + 3);
-      hitGfx.lineStyle(2, 0xffffff, 0.9);
+      hitGfx.lineStyle(2, 0xaaffcc, 0.9);
       hitGfx.strokeCircle(hitScreenX, hitScreenY, hitTarget.size + 8);
+      hitGfx.setDepth(100);
 
       this.time.delayedCall(120, () => {
         hitGfx.destroy();
@@ -715,26 +761,26 @@ export class SixShotScene extends Phaser.Scene {
     const centerY = this.scale.height / 2;
 
     const gfx = this.add.graphics();
-    const gap = 4;
-    const length = 8;
+    const gap = 3;
+    const length = 6;
     const thickness = 1.5;
 
-    // Crosshair dark outline for contrast
-    gfx.lineStyle(thickness + 1, 0x000000, 0.7);
+    // Crosshair dark outline for contrast against any background
+    gfx.lineStyle(thickness + 1.5, 0x0a0c12, 0.85);
     gfx.lineBetween(0, -gap, 0, -gap - length);
     gfx.lineBetween(0, gap, 0, gap + length);
     gfx.lineBetween(-gap, 0, -gap - length, 0);
     gfx.lineBetween(gap, 0, gap + length, 0);
 
-    // Crosshair main cyan lines
+    // Crosshair crisp lines with subtle cyan-white tint
     gfx.lineStyle(thickness, 0x00ffff, 0.95);
     gfx.lineBetween(0, -gap, 0, -gap - length);
     gfx.lineBetween(0, gap, 0, gap + length);
     gfx.lineBetween(-gap, 0, -gap - length, 0);
     gfx.lineBetween(gap, 0, gap + length, 0);
 
-    // Subtle center dot
-    gfx.fillStyle(0xffffff, 0.9);
+    // Center precision dot
+    gfx.fillStyle(0xffffff, 0.95);
     gfx.fillCircle(0, 0, 1);
 
     this.crosshairContainer = this.add.container(centerX, centerY, [gfx]);
@@ -778,16 +824,16 @@ export class SixShotScene extends Phaser.Scene {
    * Create Exit Button in top-right corner.
    */
   private createExitButton(): void {
-    const margin = 20;
+    const margin = 18;
     const x = this.scale.width - margin;
     const y = margin;
 
     this.exitButton = this.add.text(x, y, '← EXIT', {
       fontFamily: 'Consolas, Monaco, monospace',
-      fontSize: '13px',
-      color: '#88aacc',
-      backgroundColor: '#121626cc',
-      padding: { x: 10, y: 6 },
+      fontSize: '12px',
+      color: '#8fa0b5',
+      backgroundColor: '#121520dd',
+      padding: { x: 12, y: 7 },
     })
     .setOrigin(1, 0)
     .setDepth(250);
@@ -795,47 +841,48 @@ export class SixShotScene extends Phaser.Scene {
 
   /**
    * Create Gameplay HUD panel at top-center.
+   * Compact, translucent dark banner with white numbers and restrained cyan accents.
    */
   private createHud(): void {
     const centerX = this.scale.width / 2;
-    const centerY = 36;
+    const centerY = 30;
 
-    const bg = this.add.rectangle(0, 0, 420, 50, 0x0a0d18, 0.85);
-    bg.setStrokeStyle(1.5, 0x232736, 0.9);
+    const bg = this.add.rectangle(0, 0, 360, 40, 0x10131d, 0.82);
+    bg.setStrokeStyle(1, 0x272c3d, 0.9);
 
-    const timeLabel = this.add.text(-140, -14, 'TIME', {
+    const timeLabel = this.add.text(-120, -10, 'TIME', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '10px',
-      color: '#88aacc',
+      color: '#7e8b9f',
     }).setOrigin(0.5, 0.5);
 
-    this.hudTimeText = this.add.text(-140, 6, '30.0s', {
+    this.hudTimeText = this.add.text(-120, 6, '30.0s', {
       fontFamily: 'Consolas, Monaco, monospace',
-      fontSize: '18px',
+      fontSize: '16px',
       color: '#00e5ff',
     }).setOrigin(0.5, 0.5);
 
-    const hitsLabel = this.add.text(0, -14, 'HITS', {
+    const hitsLabel = this.add.text(0, -10, 'HITS', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '10px',
-      color: '#88aacc',
+      color: '#7e8b9f',
     }).setOrigin(0.5, 0.5);
 
     this.hudHitsText = this.add.text(0, 6, '0', {
       fontFamily: 'Consolas, Monaco, monospace',
-      fontSize: '18px',
+      fontSize: '16px',
       color: '#ffffff',
     }).setOrigin(0.5, 0.5);
 
-    const accLabel = this.add.text(140, -14, 'ACCURACY', {
+    const accLabel = this.add.text(120, -10, 'ACCURACY', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '10px',
-      color: '#88aacc',
+      color: '#7e8b9f',
     }).setOrigin(0.5, 0.5);
 
-    this.hudAccText = this.add.text(140, 6, '0.0%', {
+    this.hudAccText = this.add.text(120, 6, '0.0%', {
       fontFamily: 'Consolas, Monaco, monospace',
-      fontSize: '18px',
+      fontSize: '16px',
       color: '#00ffcc',
     }).setOrigin(0.5, 0.5);
 
@@ -894,25 +941,30 @@ export class SixShotScene extends Phaser.Scene {
 
     const bgDim = this.add.rectangle(0, 0, 3000, 2000, 0x090b14, 0.85);
 
-    const panel = this.add.rectangle(0, 0, 480, 260, 0x121626, 0.95);
-    panel.setStrokeStyle(2, 0x00e5ff, 0.8);
+    const panel = this.add.rectangle(0, 0, 480, 250, 0x131622, 0.95);
+    panel.setStrokeStyle(1.5, 0x242a3c, 0.9);
 
-    const title = this.add.text(0, -65, this.modeTitle, {
+    const title = this.add.text(0, -60, this.modeTitle, {
       fontFamily: 'Consolas, Monaco, monospace',
-      fontSize: '36px',
-      color: '#00e5ff',
+      fontSize: '34px',
+      color: '#ffffff',
+      stroke: '#00e5ff',
+      strokeThickness: 1,
     }).setOrigin(0.5, 0.5);
 
-    const subtitle = this.add.text(0, -20, this.modeSubtitle, {
+    const subtitle = this.add.text(0, -15, this.modeSubtitle, {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '13px',
-      color: '#88aacc',
+      color: '#8fa0b5',
     }).setOrigin(0.5, 0.5);
 
-    const startPrompt = this.add.text(0, 50, '[ TAP TO START ]', {
+    const buttonBox = this.add.rectangle(0, 48, 240, 44, 0x1a2030, 0.9);
+    buttonBox.setStrokeStyle(1.5, 0x00e5ff, 0.85);
+
+    const startPrompt = this.add.text(0, 48, 'CLICK TO START', {
       fontFamily: 'Consolas, Monaco, monospace',
-      fontSize: '22px',
-      color: '#ffffff',
+      fontSize: '16px',
+      color: '#00e5ff',
     }).setOrigin(0.5, 0.5);
 
     this.startContainer = this.add.container(centerX, centerY, [
@@ -920,6 +972,7 @@ export class SixShotScene extends Phaser.Scene {
       panel,
       title,
       subtitle,
+      buttonBox,
       startPrompt,
     ]);
 
@@ -933,26 +986,29 @@ export class SixShotScene extends Phaser.Scene {
 
     const bgDim = this.add.rectangle(0, 0, 3000, 2000, 0x090b14, 0.88);
 
-    const panel = this.add.rectangle(0, 0, 480, 360, 0x121626, 0.95);
-    panel.setStrokeStyle(2, 0x00ffcc, 0.8);
+    const panel = this.add.rectangle(0, 0, 480, 350, 0x131622, 0.96);
+    panel.setStrokeStyle(1.5, 0x242a3c, 0.9);
 
     const title = this.add.text(0, -125, 'ROUND COMPLETE', {
       fontFamily: 'Consolas, Monaco, monospace',
-      fontSize: '28px',
+      fontSize: '26px',
       color: '#00ffcc',
     }).setOrigin(0.5, 0.5);
 
-    this.resultsStatsText = this.add.text(0, -10, '', {
+    this.resultsStatsText = this.add.text(0, -8, '', {
       fontFamily: 'Consolas, Monaco, "Courier New", monospace',
-      fontSize: '15px',
-      color: '#ffffff',
+      fontSize: '14px',
+      color: '#e2e8f0',
       align: 'center',
       lineSpacing: 8,
     }).setOrigin(0.5, 0.5);
 
-    const restartPrompt = this.add.text(0, 120, '[ TAP TO RESTART ]', {
+    const buttonBox = this.add.rectangle(0, 118, 250, 42, 0x1a2030, 0.9);
+    buttonBox.setStrokeStyle(1.5, 0x00ffcc, 0.85);
+
+    const restartPrompt = this.add.text(0, 118, 'CLICK TO RESTART', {
       fontFamily: 'Consolas, Monaco, monospace',
-      fontSize: '20px',
+      fontSize: '15px',
       color: '#00ffcc',
     }).setOrigin(0.5, 0.5);
 
@@ -961,6 +1017,7 @@ export class SixShotScene extends Phaser.Scene {
       panel,
       title,
       this.resultsStatsText,
+      buttonBox,
       restartPrompt,
     ]);
 
@@ -1000,16 +1057,26 @@ export class SixShotScene extends Phaser.Scene {
 
     const graphics = this.add.graphics();
 
-    graphics.fillStyle(0x00e5ff, 0.25);
-    graphics.fillCircle(center, center, radius + 4);
+    // Subtle outer neon aura
+    graphics.fillStyle(0x00ff44, 0.2);
+    graphics.fillCircle(center, center, radius + 3);
 
-    graphics.fillStyle(0x00ffff, 1);
+    // Main flat neon-green sphere body
+    graphics.fillStyle(0x00ff44, 1);
     graphics.fillCircle(center, center, radius);
 
-    graphics.fillStyle(0xffffff, 0.85);
-    graphics.fillCircle(center - radius * 0.25, center - radius * 0.25, radius * 0.35);
+    // Subtle bottom-right volume shadow for 3D sphere depth
+    graphics.fillStyle(0x00c832, 0.45);
+    graphics.fillCircle(center + radius * 0.12, center + radius * 0.12, radius * 0.88);
 
-    graphics.lineStyle(1.5, 0x88ffff, 0.9);
+    // Specular highlight spot (top-left)
+    graphics.fillStyle(0xffffff, 0.9);
+    graphics.fillCircle(center - radius * 0.28, center - radius * 0.28, radius * 0.3);
+    graphics.fillStyle(0xaaffcc, 0.6);
+    graphics.fillCircle(center - radius * 0.28, center - radius * 0.28, radius * 0.42);
+
+    // High-contrast outer boundary rim so it pops against light and dark tiles
+    graphics.lineStyle(1.5, 0x007722, 0.95);
     graphics.strokeCircle(center, center, radius);
 
     graphics.generateTexture(TARGET_TEXTURE_KEY, size, size);
@@ -1022,6 +1089,7 @@ export class SixShotScene extends Phaser.Scene {
       target.y - this.aimOffsetY,
       TARGET_TEXTURE_KEY
     );
+    image.setDepth(50);
     this.targetSprites.set(target.targetId, image);
   }
 
@@ -1034,11 +1102,7 @@ export class SixShotScene extends Phaser.Scene {
    * Sets up a ~60Hz interval timer that captures aim position and accumulated mouse deltas.
    */
   private startTrajectoryCollection(): void {
-    // Clear any leftover state from a previous round
-    this.pendingTrajectorySamples = [];
-    this.accumulatedMovementX = 0;
-    this.accumulatedMovementY = 0;
-    this.trajectorySegmentStartTime = new Date().toISOString();
+    this.trajectorySampler.start(this.roundId);
     this.trajectorySamplingActive = true;
 
     // Attach a direct DOM mousemove listener on the canvas to capture every raw
@@ -1055,8 +1119,7 @@ export class SixShotScene extends Phaser.Scene {
       const mx = event.movementX || (event as unknown as { mozMovementX?: number }).mozMovementX || (event as unknown as { webkitMovementX?: number }).webkitMovementX || 0;
       const my = event.movementY || (event as unknown as { mozMovementY?: number }).mozMovementY || (event as unknown as { webkitMovementY?: number }).webkitMovementY || 0;
 
-      this.accumulatedMovementX += mx;
-      this.accumulatedMovementY += my;
+      this.trajectorySampler.accumulateMovement(mx, my);
     };
     if (this.game?.canvas) {
       this.game.canvas.addEventListener('mousemove', this.boundRawMouseHandler);
@@ -1083,14 +1146,13 @@ export class SixShotScene extends Phaser.Scene {
     // Remove the direct DOM mousemove listener
     this.removeRawMouseListener();
 
-    // Finalize any remaining samples as an unassigned trailing segment
-    if (this.pendingTrajectorySamples.length > 0) {
-      this.finalizeTrajectorySegment(null, null, new Date().toISOString());
-    }
+    const centerX = this.scale ? this.scale.width / 2 : 0;
+    const centerY = this.scale ? this.scale.height / 2 : 0;
+    const worldX = centerX + this.aimOffsetX;
+    const worldY = centerY + this.aimOffsetY;
 
-    // Reset accumulated deltas
-    this.accumulatedMovementX = 0;
-    this.accumulatedMovementY = 0;
+    // Finalize any pending movement as an unassigned trailing segment
+    this.trajectorySampler.stop(worldX, worldY);
   }
 
   /**
@@ -1109,9 +1171,7 @@ export class SixShotScene extends Phaser.Scene {
    */
   private captureTrajectorySnapshot(): void {
     if (!this.trajectorySamplingActive || this.roundState !== 'playing' || !this.pointerLocked) {
-      // Reset accumulated deltas when not capturing to avoid artificial spikes on reacquire
-      this.accumulatedMovementX = 0;
-      this.accumulatedMovementY = 0;
+      this.trajectorySampler.clearAccumulatedMovement();
       return;
     }
 
@@ -1122,19 +1182,7 @@ export class SixShotScene extends Phaser.Scene {
     const worldX = centerX + this.aimOffsetX;
     const worldY = centerY + this.aimOffsetY;
 
-    const sample: TrajectorySample = {
-      timestamp: new Date().toISOString(),
-      x: worldX,
-      y: worldY,
-      movement_x: this.accumulatedMovementX,
-      movement_y: this.accumulatedMovementY,
-    };
-
-    this.pendingTrajectorySamples.push(sample);
-
-    // Reset accumulated deltas after consuming them into the sample
-    this.accumulatedMovementX = 0;
-    this.accumulatedMovementY = 0;
+    this.trajectorySampler.capturePeriodicSnapshot(worldX, worldY);
   }
 
   /**
@@ -1146,31 +1194,11 @@ export class SixShotScene extends Phaser.Scene {
    * @param targetId - Target ID actually hit, or null for misses/unassigned
    * @param endTime - ISO timestamp marking the end of this segment
    */
-  private finalizeTrajectorySegment(
+  protected finalizeTrajectorySegment(
     shotId: string | null,
     targetId: string | null,
     endTime: string
   ): void {
-    const samples = this.pendingTrajectorySamples;
-    const startTime = this.trajectorySegmentStartTime;
-    const startMs = new Date(startTime).getTime();
-    const endMs = new Date(endTime).getTime();
-
-    const segment: TrajectorySegment = {
-      trajectory_id: generateTrajectoryId(),
-      round_id: this.roundId,
-      shot_id: shotId,
-      target_id: targetId,
-      start_time: startTime,
-      end_time: endTime,
-      duration: endMs - startMs,
-      samples: [...samples],
-    };
-
-    telemetryCollector.recordTrajectorySegment(segment);
-
-    // Start fresh for the next segment
-    this.pendingTrajectorySamples = [];
-    this.trajectorySegmentStartTime = endTime;
+    this.trajectorySampler.finalizeSegment(shotId, targetId, endTime);
   }
 }

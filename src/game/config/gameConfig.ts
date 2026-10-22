@@ -122,6 +122,6 @@ export const GAME_CONFIG: GameConfiguration = {
     spawnRetryLimit: SPAWN_RETRY_LIMIT,
     maxAimDistance: DEFAULT_MAX_AIM_DISTANCE,
   },
-  defaultTargetColor: 0x00e5ff,
-  defaultTargetHoverColor: 0xff4081,
+  defaultTargetColor: 0x00ff44,
+  defaultTargetHoverColor: 0x33ff66,
 };

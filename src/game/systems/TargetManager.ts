@@ -107,6 +107,7 @@ export class TargetManager {
 
     // Update default obstructed UI areas
     this.updateObstructedRegions();
+    this.syncMovingTargetsToBounds();
   }
 
   /**
@@ -154,6 +155,7 @@ export class TargetManager {
    */
   public setObstructedRegions(regions: ObstructedRegion[]): void {
     this.obstructedRegions = [...regions];
+    this.syncMovingTargetsToBounds();
   }
 
   public getObstructedRegions(): ObstructedRegion[] {
@@ -255,6 +257,7 @@ export class TargetManager {
         target.y = maxY;
         target.directionY = -Math.abs(target.directionY);
       }
+      this.resolveMovingTargetObstructions(target);
     }
   }
 
@@ -267,7 +270,46 @@ export class TargetManager {
     const bounds = this.getMovementBounds();
     for (const target of this.activeTargets.values()) {
       target.update(deltaSeconds, bounds);
+      if (!target.isDestroyed) this.resolveMovingTargetObstructions(target);
     }
+  }
+
+  /**
+   * Reflect moving targets away from UI overlays as well as the viewport edges.
+   * Screen-space candidates also handle an obstruction appearing over a target
+   * after a resize or camera movement, including overlapping UI regions.
+   */
+  private resolveMovingTargetObstructions(target: Target): void {
+    const x = target.x - this.aimOffsetX;
+    const y = target.y - this.aimOffsetY;
+    if (!this.isObstructed(x, y)) return;
+
+    const clearance = this.targetRadius + 4.01;
+    const xs = [x];
+    const ys = [y];
+    for (const region of this.obstructedRegions) {
+      xs.push(region.minX - clearance, region.maxX + clearance);
+      ys.push(region.minY - clearance, region.maxY + clearance);
+    }
+    let best: { x: number; y: number } | undefined;
+    let bestDistance = Infinity;
+    for (const candidateX of xs) {
+      for (const candidateY of ys) {
+        if (candidateX < this.spawnArea.minX || candidateX > this.spawnArea.maxX ||
+            candidateY < this.spawnArea.minY || candidateY > this.spawnArea.maxY ||
+            this.isObstructed(candidateX, candidateY)) continue;
+        const distance = Math.hypot(candidateX - x, candidateY - y);
+        if (distance < bestDistance) {
+          best = { x: candidateX, y: candidateY };
+          bestDistance = distance;
+        }
+      }
+    }
+    if (!best) return; // No unobstructed position exists within the current bounds.
+    if (best.x !== x) target.directionX = Math.sign(best.x - x) * Math.abs(target.directionX);
+    if (best.y !== y) target.directionY = Math.sign(best.y - y) * Math.abs(target.directionY);
+    target.x = best.x + this.aimOffsetX;
+    target.y = best.y + this.aimOffsetY;
   }
 
   /**
@@ -466,7 +508,7 @@ export class TargetManager {
       worldY = clampedScreenY + this.aimOffsetY;
     }
 
-    return { x: worldX, y: worldY };
+    return { x: Math.round(worldX), y: Math.round(worldY) };
   }
 
   /**

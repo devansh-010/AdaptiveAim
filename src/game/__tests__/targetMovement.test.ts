@@ -11,6 +11,38 @@ const testBounds: TargetBounds = {
 };
 
 describe('Moving Target Mechanics and Boundary Validation', () => {
+  it('keeps the full moving target clear of the HUD and weapon overlays', () => {
+    const manager = new TargetManager(900, 600, 1, 22, 40, 65, 50, true, 160);
+    const target = manager.createTarget('round_overlay');
+    for (const [x, y, dx, dy] of [[450, 130, 0, -1], [610, 420, 1, 0]]) {
+      target.x = x;
+      target.y = y;
+      target.directionX = dx;
+      target.directionY = dy;
+      manager.update(0.25);
+      assert.equal(manager.isObstructed(target.x, target.y), false);
+      assert.equal(manager.validateTarget(target).isRenderedVisible, true);
+    }
+  });
+
+  it('resynchronizes active moving targets immediately when the viewport shrinks', () => {
+    const manager = new TargetManager(900, 600, 1, 22, 40, 65, 50, true, 160);
+    const target = manager.createTarget('round_resize');
+    target.x = 800;
+    target.y = 500;
+    manager.updateSpawnArea(320, 240);
+    assert.equal(manager.validateTarget(target).isRenderedVisible, true);
+  });
+
+  it('clears overlay obstructions introduced by a camera aim change', () => {
+    const manager = new TargetManager(900, 600, 1, 22, 40, 65, 50, true, 160);
+    const target = manager.createTarget('round_camera');
+    target.x = 450;
+    target.y = 130;
+    manager.setAimOffset(0, 50);
+    assert.equal(manager.isObstructed(target.x, target.y - 50), false);
+  });
+
   it('1. should advance position according to speed and direction over elapsed time', () => {
     // Start at (100, 100), moving East (1, 0) at 200 px/s for 0.5s -> expected (200, 100)
     const target = new Target(

@@ -1,15 +1,16 @@
-/* AdaptiveAim - Modern Competitive Aim Trainer Styling */
+/* AdaptiveAim - Modern Competitive FPS Aim Trainer Styling */
 
 :root {
-  --bg-primary: #090b10;
-  --bg-card: #131520;
-  --bg-card-hover: #1a1d2b;
+  --bg-primary: #0d0f16;
+  --bg-card: #141723;
+  --bg-card-hover: #1a1e2d;
   --accent-cyan: #00e5ff;
+  --accent-green: #00ff66;
   --accent-mint: #00ffcc;
   --accent-magenta: #ff4081;
-  --text-primary: #f0f4f8;
-  --text-muted: #88aacc;
-  --border-color: #232738;
+  --text-primary: #f1f5f9;
+  --text-muted: #8392a5;
+  --border-color: #24293a;
   --border-active: rgba(0, 229, 255, 0.4);
 }
 
@@ -43,7 +44,12 @@ html, body {
   justify-content: space-between;
   min-height: 100vh;
   padding: 3rem 1.5rem;
-  background: radial-gradient(circle at 50% 20%, #131726 0%, var(--bg-primary) 70%);
+  background-color: var(--bg-primary);
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    radial-gradient(circle at 50% 20%, #161a29 0%, var(--bg-primary) 70%);
+  background-size: 36px 36px, 36px 36px, 100% 100%;
 }
 
 .home-header {
@@ -57,21 +63,21 @@ html, body {
 }
 
 .home-title {
-  font-size: 3rem;
+  font-size: 3.25rem;
   font-weight: 900;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  background: linear-gradient(135deg, #ffffff 30%, var(--accent-cyan) 100%);
+  background: linear-gradient(135deg, #ffffff 40%, var(--accent-cyan) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 2px 8px rgba(0, 229, 255, 0.2));
+  filter: drop-shadow(0 2px 10px rgba(0, 229, 255, 0.25));
 }
 
 .home-subtitle {
-  font-size: 1.15rem;
+  font-size: 1.1rem;
   color: var(--text-muted);
   font-weight: 500;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
 }
 
 /* Game Modes Grid */
@@ -88,7 +94,7 @@ html, body {
 .mode-card {
   background-color: var(--bg-card);
   border: 1px solid var(--border-color);
-  border-radius: 16px;
+  border-radius: 14px;
   padding: 2rem 1.75rem;
   display: flex;
   flex-direction: column;
@@ -102,21 +108,21 @@ html, body {
 .mode-card-active {
   cursor: pointer;
   border-color: var(--border-active);
-  background: linear-gradient(180deg, #161928 0%, var(--bg-card) 100%);
+  background: linear-gradient(180deg, #181c2b 0%, var(--bg-card) 100%);
 }
 
 .mode-card-active:hover {
-  transform: translateY(-5px);
+  transform: translateY(-4px);
   background-color: var(--bg-card-hover);
   border-color: var(--accent-cyan);
-  box-shadow: 0 14px 35px rgba(0, 229, 255, 0.22);
+  box-shadow: 0 12px 30px rgba(0, 229, 255, 0.2);
 }
 
 /* Disabled Mode Cards */
 .mode-card-disabled {
   cursor: default;
   opacity: 0.55;
-  border-color: #1a1d2a;
+  border-color: #1a1e2b;
 }
 
 .card-badge {
@@ -131,15 +137,15 @@ html, body {
 }
 
 .badge-active {
-  background-color: rgba(0, 229, 255, 0.15);
+  background-color: rgba(0, 229, 255, 0.12);
   color: var(--accent-cyan);
   border: 1px solid rgba(0, 229, 255, 0.4);
 }
 
 .badge-disabled {
-  background-color: rgba(136, 170, 204, 0.1);
+  background-color: rgba(131, 146, 165, 0.1);
   color: var(--text-muted);
-  border: 1px solid rgba(136, 170, 204, 0.25);
+  border: 1px solid rgba(131, 146, 165, 0.25);
 }
 
 .card-title {
@@ -158,24 +164,24 @@ html, body {
 }
 
 .play-btn {
-  background: var(--accent-cyan);
-  color: #080a10;
+  background: linear-gradient(135deg, #00e5ff 0%, #00ffcc 100%);
+  color: #080a12;
   border: none;
   padding: 0.85rem 1.5rem;
-  border-radius: 10px;
+  border-radius: 8px;
   font-size: 1rem;
   font-weight: 800;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   cursor: pointer;
   width: 100%;
   text-transform: uppercase;
   transition: all 0.2s ease;
-  box-shadow: 0 4px 15px rgba(0, 229, 255, 0.3);
+  box-shadow: 0 4px 14px rgba(0, 229, 255, 0.25);
 }
 
 .play-btn:hover {
-  background: #33ecff;
-  box-shadow: 0 6px 20px rgba(0, 229, 255, 0.45);
+  background: #25f4ff;
+  box-shadow: 0 6px 20px rgba(0, 229, 255, 0.4);
 }
 
 .disabled-status {
@@ -185,7 +191,7 @@ html, body {
   color: var(--text-muted);
   letter-spacing: 0.05em;
   padding: 0.85rem 0;
-  border-top: 1px dashed rgba(136, 170, 204, 0.2);
+  border-top: 1px dashed rgba(131, 146, 165, 0.2);
 }
 
 .home-footer {
