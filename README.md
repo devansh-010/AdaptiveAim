@@ -98,6 +98,7 @@ Structured Round Data
 ```
 
 Telemetry models include:
+
 - `Player`: `player_id`
 - `Session`: `session_id`, `player_id`, `start_time`, `end_time`
 - `Round`: `round_id`, `session_id`, `mode`, `difficulty`, `start_time`, `end_time`, `duration`, `shots_fired`, `hits`, `misses`, `accuracy`, `average_reaction_time`, `average_precision`, `targets_hit`, `targets_spawned`
@@ -105,6 +106,10 @@ Telemetry models include:
 - `Shot`: `shot_id`, `round_id`, `target_id`, `timestamp`, `hit`, `player_x`, `player_y`, `target_x`, `target_y`, `target_size`, `target_speed`, `distance_to_target`, `reaction_time`, `precision`
 - `TrajectorySample`: Logical aim position, ISO timestamp, and accumulated raw mouse deltas, sampled approximately every 16 ms and at shot boundaries.
 - `TrajectorySegment`: Round/shot/target associations, ordered samples, duration, and derived distance, efficiency, velocity, and direction-change metrics. Trailing segments have null shot/target IDs.
+
+After a round completes, click **DOWNLOAD ROUND JSON** beside restart on the results screen. Each file includes schema version `1.0.0`, player/session context, the round summary, targets, shots, raw trajectory samples, and derived metrics. Download before restarting or leaving the page: the collector keeps only the current round in memory.
+
+See the [telemetry schema](docs/telemetry-schema.md) for field meanings, units, associations, and missing-value conventions. Downloads stay on the client; nothing is uploaded.
 
 ---
 
@@ -121,7 +126,7 @@ Telemetry models include:
 - No AI or machine learning models implemented in v0.1.
 - No remote backend server or persistence layer.
 - Telemetry events are stored in-memory on the client during session runtime.
-- Structured telemetry export has not been implemented yet.
+- JSON export covers one finalized round at a time; there is no stored round history or session-wide export.
 
 The [gameplay validation checkpoint](docs/validation-baseline.md) records automated checks and the user-reported browser pass for all three modes.
 

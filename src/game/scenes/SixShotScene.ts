@@ -8,6 +8,7 @@ import {
 import { TargetManager } from '../systems/TargetManager.ts';
 import { generateRoundId, generateShotId } from '../../telemetry/ids.ts';
 import { telemetryCollector } from '../../telemetry/TelemetryCollector.ts';
+import { downloadRoundJson } from '../../telemetry/roundExport.ts';
 import type { Target } from '../entities/Target.ts';
 import type { ShotTelemetry } from '../../telemetry/types';
 import { EnvironmentRenderer } from '../rendering/EnvironmentRenderer.ts';
@@ -113,6 +114,7 @@ export class SixShotScene extends Phaser.Scene {
   protected startContainer!: Phaser.GameObjects.Container;
   protected resultsContainer!: Phaser.GameObjects.Container;
   protected resultsStatsText!: Phaser.GameObjects.Text;
+  private roundExportButton!: Phaser.GameObjects.Text;
   protected timeOverText!: Phaser.GameObjects.Text;
 
   // FPS Aiming visual elements
@@ -404,6 +406,10 @@ export class SixShotScene extends Phaser.Scene {
       this.startRound();
       this.requestPointerLock();
     } else if (this.roundState === 'results') {
+      if (this.roundExportButton.getBounds().contains(x, y)) {
+        this.downloadRoundTelemetry();
+        return;
+      }
       this.restartRound();
       this.requestPointerLock();
     } else if (this.roundState === 'playing') {
@@ -477,6 +483,7 @@ export class SixShotScene extends Phaser.Scene {
     // 8. Update UI visibility
     this.startContainer.setVisible(false);
     this.resultsContainer.setVisible(false);
+    this.roundExportButton.setText('DOWNLOAD ROUND JSON');
     if (this.timeOverText) {
       this.timeOverText.setVisible(false);
     }
@@ -1003,14 +1010,22 @@ export class SixShotScene extends Phaser.Scene {
       lineSpacing: 8,
     }).setOrigin(0.5, 0.5);
 
-    const buttonBox = this.add.rectangle(0, 118, 250, 42, 0x1a2030, 0.9);
+    const buttonBox = this.add.rectangle(-110, 118, 200, 42, 0x1a2030, 0.9);
     buttonBox.setStrokeStyle(1.5, 0x00ffcc, 0.85);
 
-    const restartPrompt = this.add.text(0, 118, 'CLICK TO RESTART', {
+    const restartPrompt = this.add.text(-110, 118, 'CLICK TO RESTART', {
       fontFamily: 'Consolas, Monaco, monospace',
       fontSize: '15px',
       color: '#00ffcc',
     }).setOrigin(0.5, 0.5);
+
+    this.roundExportButton = this.add.text(110, 118, 'DOWNLOAD ROUND JSON', {
+      fontFamily: 'Consolas, Monaco, monospace',
+      fontSize: '12px',
+      color: '#00e5ff',
+      backgroundColor: '#1a2030',
+      padding: { x: 14, y: 12 },
+    }).setOrigin(0.5, 0.5).setInteractive({ useHandCursor: true });
 
     this.resultsContainer = this.add.container(centerX, centerY, [
       bgDim,
@@ -1019,10 +1034,26 @@ export class SixShotScene extends Phaser.Scene {
       this.resultsStatsText,
       buttonBox,
       restartPrompt,
+      this.roundExportButton,
     ]);
 
     this.resultsContainer.setDepth(220);
     this.resultsContainer.setVisible(false);
+  }
+
+  private downloadRoundTelemetry(): void {
+    const data = telemetryCollector.getRoundExport();
+    if (!data || data.round.round_id !== this.roundId) {
+      this.roundExportButton.setText('ROUND DATA UNAVAILABLE');
+      return;
+    }
+    try {
+      downloadRoundJson(data);
+      this.roundExportButton.setText('DOWNLOAD ROUND JSON');
+    } catch (error) {
+      console.warn('[Telemetry] Round download failed:', error);
+      this.roundExportButton.setText('DOWNLOAD FAILED - TRY AGAIN');
+    }
   }
 
   protected updateResultsOverlay(): void {

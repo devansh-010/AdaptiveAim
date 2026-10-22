@@ -3,11 +3,69 @@ import assert from 'node:assert/strict';
 import { telemetryCollector } from '../../telemetry/TelemetryCollector.ts';
 import type { TargetManager } from '../systems/TargetManager.ts';
 import type { TrajectorySampler } from '../systems/TrajectorySampler.ts';
+import type { RoundExport } from '../../telemetry/types.ts';
 import { attachSceneHarness, loadGameScenes, sceneValue } from './helpers/sceneHarness.ts';
 
 const { SixShotScene, MovingTargetsScene, ThirtyShotScene } = await loadGameScenes();
 
 describe('Gameplay scene integration', () => {
+  for (const Scene of [SixShotScene, MovingTargetsScene, ThirtyShotScene]) {
+    it(`downloads ${Scene.name} results without restarting, shooting, or recapturing the mouse`, async (t) => {
+      const scene = new Scene();
+      const harness = attachSceneHarness(scene, t);
+      let blob: Blob | undefined;
+      t.mock.method(URL, 'createObjectURL', (value: Blob) => { blob = value; return 'blob:scene-export'; });
+      const revoke = t.mock.method(URL, 'revokeObjectURL', () => {});
+      harness.start();
+      const manager = sceneValue<TargetManager>(scene, 'targetManager');
+      const hitCount = Scene === ThirtyShotScene ? 30 : 1;
+      for (let i = 0; i < hitCount; i++) {
+        const target = manager.getActiveTargets()[0];
+        target.x = 450;
+        target.y = 300;
+        harness.click();
+      }
+      if (Scene !== ThirtyShotScene) scene.update(30000, 30000);
+      const round = telemetryCollector.getCurrentRound()!;
+      const button = sceneValue<{ getBounds(): { centerX: number; centerY: number } }>(scene, 'roundExportButton');
+      const bounds = button.getBounds();
+      harness.click(bounds.centerX, bounds.centerY);
+      assert.equal(sceneValue<string>(scene, 'roundState'), 'results');
+      assert.equal(harness.document.pointerLockElement, null);
+      assert.deepEqual(telemetryCollector.getCurrentRound(), round);
+      assert.equal(harness.downloads.length, 1);
+      assert.ok(harness.downloads[0].filename.includes(round.round_id));
+      assert.ok(blob);
+      const exported: RoundExport = JSON.parse(await blob.text());
+      assert.equal(exported.round.round_id, round.round_id);
+      assert.equal(exported.shots.length, hitCount);
+      assert.equal(exported.trajectory_segments.filter(s => s.shot_id !== null).length, hitCount);
+      t.mock.timers.tick(1000);
+      assert.equal(revoke.mock.callCount(), 1);
+      harness.click();
+      assert.equal(sceneValue<string>(scene, 'roundState'), 'playing');
+      assert.notEqual(telemetryCollector.getCurrentRound()?.round_id, exported.round.round_id);
+      assert.equal(telemetryCollector.getRoundExport(), null);
+      assert.equal(exported.shots.length, hitCount);
+    });
+  }
+
+  it('keeps results available for retry when a download fails', (t) => {
+    const scene = new SixShotScene();
+    const harness = attachSceneHarness(scene, t);
+    t.mock.method(URL, 'createObjectURL', () => { throw new Error('Download unavailable'); });
+    t.mock.method(console, 'warn', () => {});
+    harness.start();
+    scene.update(30000, 30000);
+    const button = sceneValue<{ text: string; getBounds(): { centerX: number; centerY: number } }>(scene, 'roundExportButton');
+    const bounds = button.getBounds();
+    harness.click(bounds.centerX, bounds.centerY);
+    assert.equal(sceneValue<string>(scene, 'roundState'), 'results');
+    assert.equal(button.text, 'DOWNLOAD FAILED - TRY AGAIN');
+    assert.equal(harness.downloads.length, 0);
+    assert.ok(telemetryCollector.getRoundExport());
+  });
+
   it('cleans up an active round on direct destruction, as used when exiting React', (t) => {
     const scene = new MovingTargetsScene();
     const harness = attachSceneHarness(scene, t);

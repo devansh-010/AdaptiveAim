@@ -5,7 +5,9 @@ import type {
   TargetTelemetry,
   ShotTelemetry,
   TrajectorySegment,
+  RoundExport,
 } from './types';
+import { ROUND_EXPORT_SCHEMA_VERSION } from './types.ts';
 import { generatePlayerId, generateSessionId } from './ids.ts';
 import { calculateTrajectoryFeatures } from './trajectoryFeatures.ts';
 
@@ -41,6 +43,24 @@ export class TelemetryCollector {
 
   public getCurrentRound(): RoundTelemetry | null {
     return this.currentRound ? { ...this.currentRound } : null;
+  }
+
+  /**
+   * Copy the finalized round without ending an active round or exposing collector
+   * references. The snapshot remains independent when the next round starts.
+   */
+  public getRoundExport(): RoundExport | null {
+    if (!this.currentRound?.end_time) return null;
+    return structuredClone({
+      schema_version: ROUND_EXPORT_SCHEMA_VERSION,
+      exported_at: new Date().toISOString(),
+      player: this.activePlayer,
+      session: this.activeSession,
+      round: { ...this.currentRound, end_time: this.currentRound.end_time },
+      targets: this.targetEvents,
+      shots: this.shotEvents,
+      trajectory_segments: this.trajectorySegments,
+    });
   }
 
   /**

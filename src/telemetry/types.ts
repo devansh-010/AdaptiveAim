@@ -148,3 +148,17 @@ export interface TrajectoryDerivedMetrics {
    */
   eligible_duration_seconds: number;
 }
+
+export const ROUND_EXPORT_SCHEMA_VERSION = '1.0.0';
+
+/** A detached snapshot of one finalized round, including all raw event data. */
+export interface RoundExport {
+  schema_version: typeof ROUND_EXPORT_SCHEMA_VERSION;
+  exported_at: string;
+  player: Player;
+  session: Session;
+  round: RoundTelemetry & { end_time: string };
+  targets: TargetTelemetry[];
+  shots: ShotTelemetry[];
+  trajectory_segments: TrajectorySegment[];
+}
