@@ -34,3 +34,6 @@ dist-ssr/
 # TypeScript tsbuildinfo
 *.tsbuildinfo
 node_modules/.tmp
+
+# Local player captures, notes, and validation reports
+data/

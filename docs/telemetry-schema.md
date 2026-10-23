@@ -137,6 +137,6 @@ Metrics cover the samples present: the interval before a segment's first sample 
 
 Tests exercise JSON round trips, hit/miss/trailing IDs, optional/null/zero values, nested snapshot isolation, restart behavior, empty rounds, download resource cleanup, error handling, and the actual results-click path in all three scenes using the existing browser/rendering stubs.
 
-A real Six Shot JSON download supplied by the user was inspected on 22 October 2026. Its envelope, ID links, counts, timestamps, hit distances, reaction-time aggregates, shot-boundary samples, trailing segment, and derived metrics passed validation. The native download produced a readable JSON file. The results-click paths in the other two modes are covered by scene integration tests; their downloaded files have not yet been inspected independently.
+Native JSON downloads supplied by the user were inspected for Six Shot on 22 October 2026 and Moving Targets and Thirty Shot on 23 October 2026. All three passed the local validator with zero errors or warnings, including envelope/ID links, counts, timestamps, hit distances, reaction-time aggregates, exact shot-boundary samples, trailing-segment conventions, and derived metrics. The Moving Targets and Thirty Shot files also passed an independent distance/velocity calculation. See the [download checkpoint and collection guide](data-collection.md#native-download-validation) for counts, sampling observations, coverage limits, and the next collection step.
 
 This milestone adds no round archive, backend, database, automatic uploads, or AI.

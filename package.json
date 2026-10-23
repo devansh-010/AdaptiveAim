@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "node --experimental-strip-types --test src/**/*.test.ts",
+    "telemetry:check": "node --experimental-strip-types src/telemetry/analysis/cli.ts",
     "preview": "vite preview"
   },
   "dependencies": {

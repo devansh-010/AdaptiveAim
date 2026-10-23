@@ -111,6 +111,14 @@ After a round completes, click **DOWNLOAD ROUND JSON** beside restart on the res
 
 See the [telemetry schema](docs/telemetry-schema.md) for field meanings, units, associations, and missing-value conventions. Downloads stay on the client; nothing is uploaded.
 
+Validate downloaded rounds locally with Node.js 24:
+
+```powershell
+npm.cmd run telemetry:check -- "D:\Downloads\adaptiveaim_<mode>_<round_id>.json"
+```
+
+The command accepts files or folders, checks telemetry consistency, and reports per-mode totals. See the [validation and collection guide](docs/data-collection.md) for warnings, JSON reports, and the next browser checks. Keep local captures/reports under the ignored `data/` folder.
+
 ---
 
 ## Playable Game Modes
