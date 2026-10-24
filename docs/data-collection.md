@@ -61,3 +61,9 @@ Collect three normal rounds per mode as an initial nine-round inspection batch. 
 Keep a local notes file with the app commit (`git rev-parse HEAD`), browser/version, viewport, sensitivity/settings, mode/order, and any focus loss, pointer-lock loss, resizing, or early exit. Pair notes with filenames. If interrupted, keep the file and mark the interruption; review or repeat it before treating it as an ordinary completed round. Do not silently edit raw records to make checks pass.
 
 Validate the folder after collection and review per-mode totals and warnings. This small batch is for finding recording defects and establishing an inspection workflow; it is insufficient to justify an adaptive model or claims about player skill. Modelling, persistent identity, configuration metadata, and larger collection protocols belong to later milestones.
+
+## Collected baseline checkpoint — 24 October 2026
+
+The nine new recordings have been collected, copied byte-for-byte into ignored `data/captures/`, and inspected. All nine pass integrity checks with zero errors; two timed rounds retain `short_round` warnings for 29.99-second wall-clock durations. Their timing and interpretation are documented in the [baseline analysis](baseline-analysis.md), along with per-mode results and sampling observations. The user confirmed unchanged settings and no interruptions. Exact browser/version, viewport, sensitivity value, and warm-up status remain unrecorded.
+
+The initial nine-round inspection is complete. Next, define per-mode adaptation objectives and a controlled evaluation plan; this batch alone does not support training or validating a learned model.

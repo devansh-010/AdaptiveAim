@@ -119,6 +119,10 @@ npm.cmd run telemetry:check -- "D:\Downloads\adaptiveaim_<mode>_<round_id>.json"
 
 The command accepts files or folders, checks telemetry consistency, and reports per-mode totals. See the [validation and collection guide](docs/data-collection.md) for warnings, JSON reports, and the next browser checks. Keep local captures/reports under the ignored `data/` folder.
 
+The [initial nine-round baseline analysis](docs/baseline-analysis.md) records the first batch: three rounds per mode, zero integrity errors, two reviewed duration warnings, and the limits of these observations before adaptive-difficulty design.
+
+The [first adaptive-difficulty design](docs/adaptive-difficulty-design.md) specifies a tested, independent rule prototype and a fixed-versus-adaptive evaluation plan. It is not connected to gameplay; all modes still use fixed difficulty. Configuration, termination, and interruption recording are required before live integration.
+
 ---
 
 ## Playable Game Modes
